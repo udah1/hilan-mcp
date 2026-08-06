@@ -1,0 +1,57 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.udah1/hilan-mcp",
+  "description": "Pull Hilan (Hilanet / חילן, חילנט) payslips and Form 106 into any AI assistant.",
+  "repository": {
+    "url": "https://github.com/udah1/hilan-mcp",
+    "source": "github"
+  },
+  "version": "0.3.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "hilan-mcp",
+      "version": "0.3.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "description": "Default tenant as a full URL, e.g. \"https://amdocs.net.hilan.co.il\" (optional if you always pass a `tenant` argument to tools instead). Takes priority over COMPANY_TENANT/COMPANY_CODE.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPANY_URL"
+        },
+        {
+          "description": "Default tenant subdomain, e.g. \"amdocs\" (optional if COMPANY_URL is set or a `tenant` argument is always passed to tools).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPANY_TENANT"
+        },
+        {
+          "description": "Default tenant as a numeric org code, e.g. \"5227\" (optional, lowest priority of the three tenant env vars).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPANY_CODE"
+        },
+        {
+          "description": "Database encryption key (only needed if you skip `npx hilan-mcp setup-key`, which stores it in your OS credential store instead).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "HILAN_DB_KEY"
+        },
+        {
+          "description": "Path to a CA bundle, only needed on a network with a TLS-intercepting corporate proxy (e.g. \"self-signed certificate in certificate chain\" errors).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "NODE_EXTRA_CA_CERTS"
+        }
+      ]
+    }
+  ]
+}
