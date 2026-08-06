@@ -1,0 +1,54 @@
+{
+  "name": "hilan-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Hilan (Hilanet, net.hilan.co.il) employee self-service — pull payslips and Form 106 into an AI assistant, for any tenant.",
+  "type": "module",
+  "bin": {
+    "hilan-mcp": "./dist/cli/index.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "start:mcp": "tsx src/mcp/Server.ts",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "cli": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts",
+    "ingest-creds": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts ingest-creds",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "mcp",
+    "hilan",
+    "hilanet",
+    "payslip",
+    "form106",
+    "israel"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "better-sqlite3-multiple-ciphers": "^12.11.1",
+    "chalk": "^5.4.1",
+    "commander": "^11.1.0",
+    "inquirer": "^9.2.12",
+    "node-notifier": "^10.0.1",
+    "node-sql-parser": "^5.3.9",
+    "playwright": "^1.62.1",
+    "tsx": "^4.19.4",
+    "zod": "^3.25.28"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.8",
+    "@types/node": "^20.11.28",
+    "@types/node-notifier": "^8.0.5",
+    "typescript": "^5.3.3",
+    "vitest": "^1.6.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

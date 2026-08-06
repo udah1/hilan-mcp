@@ -1,0 +1,249 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
+import { getDbInstance, SQLiteDatabaseService } from '../services/DatabaseService.js';
+import { encryptionKeyService } from '../services/EncryptionKeyService.js';
+import { HilanClient } from '../services/HilanClient.js';
+import { TenantService } from '../services/TenantService.js';
+import { getDefaultTenantInput } from '../utils/env.js';
+import '../utils/consoleRedirect.js';
+import { configureLogger } from '../utils/logger.js';
+configureLogger({ enableConsoleOutput: true });
+
+interface TextContent {
+  type: 'text';
+  text: string;
+  [key: string]: unknown;
+}
+
+type ZodRecord<T extends z.ZodTypeAny = z.ZodTypeAny> = Record<string, z.infer<T>>;
+
+interface ToolSchema {
+  description?: string;
+  inputSchema?: Record<string, ZodRecord>;
+}
+
+type ToolHandler = (params: Record<string, unknown>) => Promise<unknown>;
+
+class Server {
+  private server: McpServer;
+  private databaseService: SQLiteDatabaseService;
+  private tenantService: TenantService;
+  private tools: Map<string, { handler: ToolHandler; schema?: ToolSchema }> = new Map();
+
+  constructor() {
+    this.server = new McpServer({ name: 'hilan-mcp-server', version: '0.1.0' });
+    this.databaseService = getDbInstance();
+    this.tenantService = new TenantService(this.databaseService);
+    this.setupTools();
+    this.setupErrorHandling();
+  }
+
+  private setupErrorHandling() {
+    this.server.server.onerror = (error: Error) => {
+      console.error('[Error] MCP Server error:', error);
+    };
+
+    process.on('SIGINT', async () => {
+      await this.server.close();
+      process.exit(0);
+    });
+  }
+
+  private textResponse(text: string): { content: TextContent[] } {
+    return { content: [{ type: 'text', text }] };
+  }
+
+  private registerTool(name: string, handler: ToolHandler, schema?: ToolSchema) {
+    this.tools.set(name, { handler, schema });
+    const { description, inputSchema } = schema || {};
+
+    this.server.tool(name, description || '', inputSchema || {}, async (params: Record<string, unknown>) => {
+      try {
+        const result = await handler(params);
+        return this.textResponse(JSON.stringify(result));
+      } catch (error: any) {
+        console.error(`Error in ${name}:`, error);
+        throw new McpError(ErrorCode.InternalError, error.message || `Error in ${name}`);
+      }
+    });
+  }
+
+  private async withDb<T>(fn: (db: SQLiteDatabaseService) => Promise<T> | T): Promise<T> {
+    await encryptionKeyService.ensureKeyIsAvailable();
+    await this.databaseService.initialize();
+    return fn(this.databaseService);
+  }
+
+  /**
+   * Resolves the `tenant` a tool was called with, falling back to this
+   * server process's COMPANY_URL / COMPANY_TENANT / COMPANY_CODE env vars
+   * (see src/utils/env.ts) for single-tenant setups.
+   */
+  private async resolveTenant(tenantParam?: string): Promise<string> {
+    const raw = tenantParam?.trim() || getDefaultTenantInput();
+    if (!raw) {
+      throw new Error(
+        'No tenant specified. Pass a "tenant" argument, or set one of COMPANY_URL / COMPANY_TENANT / COMPANY_CODE in this MCP server\'s env (only the first one found, in that order, is used).'
+      );
+    }
+    return HilanClient.resolveTenantInput(raw);
+  }
+
+  private setupTools() {
+    this.registerTool(
+      'listTenants',
+      async () => {
+        return this.withDb(async db => {
+          const tenants = await db.listTenants();
+          return {
+            success: true,
+            data: {
+              tenants: tenants.map(t => ({
+                subdomain: t.subdomain,
+                orgCode: t.org_code,
+                capability: t.capability,
+                hasEmployeeId: t.employee_id !== null,
+              })),
+            },
+          };
+        });
+      },
+      { description: 'List configured Hilan tenants (no secrets returned)' }
+    );
+
+    this.registerTool(
+      'syncPayslips',
+      async params => {
+        const { tenant, monthsBack } = params as { tenant?: string; monthsBack?: number };
+        return this.withDb(async () => {
+          const resolvedTenant = await this.resolveTenant(tenant);
+          const results = await this.tenantService.syncPayslips(resolvedTenant, monthsBack ?? 3);
+          return { success: true, data: { tenant: resolvedTenant, payslips: results } };
+        });
+      },
+      {
+        description:
+          'Log into a Hilan tenant (using previously ingested credentials) and sync recent payslips (structured Bruto/Neto/parts + PDF)',
+        inputSchema: {
+          tenant: z
+            .string()
+            .optional()
+            .describe(
+              'Tenant subdomain, e.g. "amdocs". Optional if this server has COMPANY_URL / COMPANY_TENANT / COMPANY_CODE set in its env'
+            ),
+          monthsBack: z.number().int().min(1).max(24).optional().describe('How many recent months to sync (default 3)'),
+        },
+      }
+    );
+
+    this.registerTool(
+      'syncForm106',
+      async params => {
+        const { tenant, year } = params as { tenant?: string; year?: string };
+        return this.withDb(async () => {
+          const resolvedTenant = await this.resolveTenant(tenant);
+          const result = await this.tenantService.syncForm106(resolvedTenant, year);
+          return { success: true, data: { tenant: resolvedTenant, form106: result } };
+        });
+      },
+      {
+        description: 'Log into a Hilan tenant and download Form 106 (annual tax summary) for a given year, or the default year',
+        inputSchema: {
+          tenant: z
+            .string()
+            .optional()
+            .describe(
+              'Tenant subdomain, e.g. "amdocs". Optional if this server has COMPANY_URL / COMPANY_TENANT / COMPANY_CODE set in its env'
+            ),
+          year: z.string().optional().describe('Tax year, e.g. "2025" (defaults to the tenant\'s current default year)'),
+        },
+      }
+    );
+
+    this.registerTool(
+      'listTables',
+      async () => {
+        return this.withDb(async db => {
+          const result = await db.listTables();
+          if (!result.success) throw new Error(result.error || 'Failed to list tables');
+          return { success: true, data: { tables: result.tables } };
+        });
+      },
+      { description: 'List queryable tables (payslips, form106 — credentials/sessions are never exposed here)' }
+    );
+
+    this.registerTool(
+      'describeTable',
+      async params => {
+        const { table } = params as { table: string };
+        if (!table) throw new Error('Table name is required');
+        return this.withDb(async db => {
+          const columnsResult = await db.executeSafeSelectQuery(`PRAGMA table_info(${table})`);
+          const indexesResult = await db.executeSafeSelectQuery(`PRAGMA index_list(${table})`);
+          if (!columnsResult.success) throw new Error(columnsResult.error || 'Failed to get table columns');
+          if (!indexesResult.success) throw new Error(indexesResult.error || 'Failed to get table indexes');
+          return { success: true, data: { columns: columnsResult.data, indexes: indexesResult.data } };
+        });
+      },
+      {
+        description: 'Get columns and indexes for a table (payslips or form106 only)',
+        inputSchema: { table: z.enum(['payslips', 'form106']).describe('Table to describe') },
+      }
+    );
+
+    this.registerTool(
+      'query',
+      async params => {
+        const { sql } = params as { sql: string };
+        if (!sql) throw new Error('sql is required');
+        return this.withDb(async db => {
+          const result = await db.executeSafeSelectQuery(sql);
+          if (!result.success) throw new Error(result.error || 'Query execution failed');
+          return { success: true, data: result.data };
+        });
+      },
+      {
+        description:
+          'Execute a SELECT-only SQL query against payslips/form106 (allowlisted; credentials/sessions/tenants are never reachable)',
+        inputSchema: { sql: z.string().describe('SQL SELECT query, e.g. "SELECT * FROM payslips ORDER BY period DESC"') },
+      }
+    );
+  }
+
+  public async start() {
+    try {
+      await this.server.connect(new StdioServerTransport());
+      console.error('hilan-mcp server started successfully');
+    } catch (error) {
+      console.error('Failed to start hilan-mcp server:', error);
+      throw error;
+    }
+  }
+
+  public async close() {
+    await this.server.close();
+  }
+}
+
+const isMain = process.argv[1] && process.argv[1] === new URL(import.meta.url).pathname;
+
+async function main() {
+  try {
+    const server = new Server();
+    await server.start();
+  } catch (error) {
+    console.error('Failed to start hilan-mcp server:', error);
+    process.exit(1);
+  }
+}
+
+if (isMain) {
+  main().catch(error => {
+    console.error('Unhandled error in hilan-mcp server:', error);
+    process.exit(1);
+  });
+}
+
+export { Server };
