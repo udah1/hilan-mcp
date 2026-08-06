@@ -116,3 +116,32 @@ describe('checkForUpdateNotice', () => {
     expect(getCurrentVersion()).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
+
+describe('mergeUpdateNotice', () => {
+  const notice = { currentVersion: '0.1.0', latestVersion: '0.2.0', message: 'update available' };
+
+  it('returns the result unchanged when there is no notice', async () => {
+    const { mergeUpdateNotice } = await freshModule();
+    expect(mergeUpdateNotice({ success: true }, null)).toEqual({ success: true });
+  });
+
+  it('splices _updateNotice into a plain-object result', async () => {
+    const { mergeUpdateNotice } = await freshModule();
+    expect(mergeUpdateNotice({ success: true, data: { a: 1 } }, notice)).toEqual({
+      success: true,
+      data: { a: 1 },
+      _updateNotice: 'update available',
+    });
+  });
+
+  it('leaves an array result untouched even when a notice is present (no sensible place to attach a field)', async () => {
+    const { mergeUpdateNotice } = await freshModule();
+    expect(mergeUpdateNotice([1, 2, 3], notice)).toEqual([1, 2, 3]);
+  });
+
+  it('leaves a primitive result untouched even when a notice is present', async () => {
+    const { mergeUpdateNotice } = await freshModule();
+    expect(mergeUpdateNotice('plain string', notice)).toBe('plain string');
+    expect(mergeUpdateNotice(null, notice)).toBeNull();
+  });
+});

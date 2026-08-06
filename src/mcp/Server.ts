@@ -8,7 +8,7 @@ import { HilanClient } from '../services/HilanClient.js';
 import { TenantService } from '../services/TenantService.js';
 import { getDefaultTenantInput } from '../utils/env.js';
 import { redactError } from '../utils/redact.js';
-import { checkForUpdateNotice, dismissUpdateVersion, getCurrentVersion } from '../utils/updateCheck.js';
+import { checkForUpdateNotice, dismissUpdateVersion, getCurrentVersion, mergeUpdateNotice } from '../utils/updateCheck.js';
 import '../utils/consoleRedirect.js';
 import { configureLogger } from '../utils/logger.js';
 configureLogger({ enableConsoleOutput: true });
@@ -76,10 +76,7 @@ class Server {
         // call next — this server has no UI of its own, so the AI agent is
         // the only channel back to the user. See utils/updateCheck.ts.
         const updateNotice = name === 'dismissUpdateNotice' ? null : await checkForUpdateNotice();
-        const payload =
-          updateNotice && result && typeof result === 'object' && !Array.isArray(result)
-            ? { ...result, _updateNotice: updateNotice.message }
-            : result;
+        const payload = mergeUpdateNotice(result, updateNotice);
         return this.textResponse(JSON.stringify(payload));
       } catch (error: unknown) {
         const safeMessage = redactError(error) || `Error in ${name}`;

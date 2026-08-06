@@ -134,6 +134,18 @@ export function subdomainFromBaseUrl(baseUrl: string): string {
 }
 
 /**
+ * Escapes a DOM element `id` (scraped from the tenant's own login page, see
+ * `discoverLoginFields`) for safe use inside a `#<id>` CSS selector. Real
+ * IDs are always simple identifiers in practice, but this avoids silently
+ * breaking (or worse, matching the wrong element) if some tenant's markup
+ * ever uses an id with a character that's special in CSS (a dot, colon,
+ * space, leading digit, etc.) — Node has no built-in `CSS.escape`.
+ */
+function cssEscapeId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, ch => `\\${ch}`);
+}
+
+/**
  * Owns one headless Playwright browser for the whole process and one
  * BrowserContext per tenant (login + every subsequent `.asmx`/PDF call goes
  * through that same context's `context.request` API client — no separate
@@ -171,7 +183,14 @@ export class HilanClient {
       await page.goto('https://net.hilan.co.il/login', { waitUntil: 'networkidle' });
       await page.fill('#orgId', orgCode);
       await page.click('button[type="submit"]');
-      await page.waitForTimeout(2500);
+      // Waits for whatever happens next (redirect to the tenant's own
+      // subdomain on success, or the page re-settling with a validation
+      // error on an invalid code) to actually finish, instead of a fixed
+      // delay that's slower than necessary on a fast connection and can
+      // still race a slow one. Bounded so a network hiccup can't hang this
+      // indefinitely — the outcome checks below already handle "still on
+      // the generic login page" as a valid (failure) result.
+      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
       const finalUrl = page.url();
       if (finalUrl.includes('net.hilan.co.il/login') && !finalUrl.startsWith('https://net.hilan.co.il')) {
         return subdomainFromBaseUrl(finalUrl);
@@ -246,7 +265,7 @@ export class HilanClient {
         await page.goto(`${baseUrl}/login`, { waitUntil: 'networkidle' });
 
         for (const [id, value] of Object.entries(fields)) {
-          await page.fill(`#${id}`, value);
+          await page.fill(`#${cssEscapeId(id)}`, value);
         }
 
         const submitBtn = page.locator('#mainForm button[type="submit"]');

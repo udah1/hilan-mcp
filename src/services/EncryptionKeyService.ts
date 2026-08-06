@@ -58,6 +58,20 @@ export class EncryptionKeyService {
       return this.currentKey as string;
     }
 
+    // Over stdio (the MCP transport), neither the desktop-notification prompt
+    // nor the terminal fallback can reliably reach the user in time — worse,
+    // the notification's `wait: true` blocks for up to `maxRetries` * 30s
+    // before finally falling through to this same error. Fail immediately
+    // with the actionable message instead of hanging the tool call for up to
+    // a minute first. CLI commands never disable this, so they keep the full
+    // interactive flow below.
+    if (!this.allowStdinFallback) {
+      throw new Error(
+        'Could not obtain the database encryption key: no OS credential store entry and no HILAN_DB_KEY env var set. ' +
+          'Run `npx hilan-mcp setup-key` (recommended) or set HILAN_DB_KEY in this MCP server\'s env, then retry.'
+      );
+    }
+
     if (this.isPrompting) {
       return new Promise<string>((resolve, reject) => {
         const check = () => {

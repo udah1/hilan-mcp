@@ -329,7 +329,9 @@ work and still save a PDF, just without the parsed Bruto/Neto numbers.
 - The whole SQLite database (`~/Library/Application Support/HilanMcp/hilan.db`
   on macOS, XDG/AppData equivalents elsewhere) is encrypted at rest via
   SQLCipher (`better-sqlite3-multiple-ciphers`), keyed by a passphrase you
-  choose that is **never persisted to disk**. App-data, PDF, and log
+  choose that is **never persisted to disk**. PDFs live alongside it under
+  `.../HilanMcp/pdfs/<tenant>/`, and rolling log files under
+  `.../HilanMcp/logs/` (redacted — see below). App-data, PDF, and log
   directories are created with `0700` permissions; the DB and PDF files
   themselves with `0600`.
 - `credentials` (your login fields) and `sessions` (saved browser cookies)

@@ -1,24 +1,37 @@
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { format } from 'util';
-import { fileURLToPath } from 'url';
 import { redactSecrets } from './redact.js';
+import { getAppDataPath } from '../services/DatabaseService.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const LOGS_DIR = join(__dirname, '../../logs');
+// Logs live under the same per-user app-data directory as the DB/PDFs
+// (~/Library/Application Support/HilanMcp/logs on macOS, etc.) — NOT next
+// to the installed package. A path relative to this file (e.g.
+// `__dirname/../../logs`) would land inside node_modules, which is
+// read-only for a typical global/system npm install and would crash the
+// server at startup with an EACCES before it could even report a clean
+// error.
+const LOGS_DIR = join(getAppDataPath(), 'HilanMcp', 'logs');
 const MAX_LOG_SIZE = 10 * 1024 * 1024;
 const MAX_LOG_FILES = 5;
 
-if (!existsSync(LOGS_DIR)) {
-  mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
-} else {
-  try {
+/** True once the logs directory is confirmed writable; false means we fall back to stderr-only logging. */
+let logsDirReady = false;
+try {
+  if (!existsSync(LOGS_DIR)) {
+    mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
+  } else {
     chmodSync(LOGS_DIR, 0o700);
-  } catch {
-    // best-effort — e.g. not the directory owner; not fatal
   }
+  logsDirReady = true;
+} catch (error) {
+  // Best-effort: a log file is a nicety, never worth crashing the whole
+  // MCP server over (e.g. a locked-down filesystem, unusual permissions).
+  process.stderr.write(
+    `[WARN] Could not prepare log directory ${LOGS_DIR}, logging to stderr only: ${
+      error instanceof Error ? error.message : String(error)
+    }\n`
+  );
 }
 
 class RollingFileLogger {
@@ -38,16 +51,22 @@ class RollingFileLogger {
   }
 
   private ensureStream() {
+    if (!logsDirReady) return;
     if (!this.stream) {
-      this.stream = createWriteStream(this.filePath, { flags: 'a', mode: 0o600 });
-      this.stream.on('error', err => {
-        console.error('Logging error:', err);
-        this.stream = null;
-      });
+      try {
+        this.stream = createWriteStream(this.filePath, { flags: 'a', mode: 0o600 });
+        this.stream.on('error', err => {
+          process.stderr.write(`[WARN] Logging error, falling back to stderr: ${err instanceof Error ? err.message : String(err)}\n`);
+          this.stream = null;
+        });
+      } catch {
+        // stays null — write() below falls back to stderr
+      }
     }
   }
 
   private rotateIfNeeded() {
+    if (!logsDirReady) return;
     const today = new Date().toISOString().split('T')[0];
 
     if (today !== this.currentDate) {

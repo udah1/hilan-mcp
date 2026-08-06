@@ -201,4 +201,50 @@ describe('payslips schema migration (period_sort backfill)', () => {
 
     await db.close();
   });
+
+  it('backfilled period_sort also works correctly with fromYear/toYear filtering', async () => {
+    const dbPath = join(dir, 'legacy-range.db');
+
+    const legacyDb = new Database(dbPath);
+    const escapedKey = TEST_KEY.replace(/'/g, "''");
+    legacyDb.pragma(`cipher='sqlcipher'`);
+    legacyDb.pragma(`legacy=4`);
+    legacyDb.pragma(`rekey='${escapedKey}'`);
+    legacyDb.exec(`
+      CREATE TABLE tenants (subdomain TEXT PRIMARY KEY);
+      CREATE TABLE payslips (
+        tenant_subdomain TEXT NOT NULL,
+        period TEXT NOT NULL,
+        period_label TEXT,
+        bruto REAL,
+        neto REAL,
+        salary_parts TEXT,
+        pdf_path TEXT,
+        fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (tenant_subdomain, period)
+      );
+    `);
+    legacyDb.prepare(`INSERT INTO tenants (subdomain) VALUES ('acme')`).run();
+    for (const [period, bruto, neto] of [
+      ['06_2015', 5000, 4000],
+      ['06_2020', 10000, 8000],
+      ['06_2025', 20000, 15000],
+    ] as const) {
+      legacyDb
+        .prepare(`INSERT INTO payslips (tenant_subdomain, period, bruto, neto) VALUES ('acme', ?, ?, ?)`)
+        .run(period, bruto, neto);
+    }
+    legacyDb.close();
+
+    // initialize() runs the period_sort backfill migration on open.
+    const db = getDbInstance(dbPath);
+    await db.initialize();
+
+    const trends = await db.getSalaryTrends('acme', 2018, 2022);
+    expect(trends.rangeCoveredYears).toEqual([2020, 2020]);
+    expect(trends.yearly).toHaveLength(1);
+    expect(trends.yearly[0]).toEqual({ year: 2020, months: 1, isPartialYear: true, avgBruto: 10000, avgNeto: 8000 });
+
+    await db.close();
+  });
 });

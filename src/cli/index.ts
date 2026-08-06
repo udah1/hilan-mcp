@@ -10,13 +10,14 @@ import { HilanClient } from '../services/HilanClient.js';
 import { getDefaultTenantInput } from '../utils/env.js';
 import { configureLogger } from '../utils/logger.js';
 import { logInfo, logSuccess, logWarning } from '../utils/cli.js';
+import { getCurrentVersion } from '../utils/updateCheck.js';
 
 configureLogger({ enableConsoleOutput: true });
 
 program
   .name('hilan-mcp')
   .description('MCP server for Hilan (Hilanet) payslips/Form106 — run with no arguments to start the MCP server itself (stdio transport)')
-  .version('0.1.0');
+  .version(getCurrentVersion());
 
 // Running the package with no subcommand is what an MCP client's config
 // actually does (e.g. `{"command": "npx", "args": ["-y", "hilan-mcp"]}`),

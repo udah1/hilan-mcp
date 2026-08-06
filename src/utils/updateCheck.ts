@@ -158,3 +158,19 @@ export function dismissUpdateVersion(version: string): void {
   state.dismissedVersion = version;
   writeState(state);
 }
+
+/**
+ * Attaches an `_updateNotice` message to a tool's result object, if there is
+ * one to show. Only merges into plain objects (not arrays/primitives) —
+ * anything else is returned unchanged, since there's no sensible place to
+ * splice an extra field into it. Extracted as a pure function so Server.ts's
+ * wiring (`registerTool`) is directly unit-testable without spinning up the
+ * whole MCP transport.
+ */
+export function mergeUpdateNotice(result: unknown, notice: UpdateNotice | null): unknown {
+  if (!notice) return result;
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    return { ...(result as Record<string, unknown>), _updateNotice: notice.message };
+  }
+  return result;
+}
