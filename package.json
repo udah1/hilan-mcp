@@ -1,6 +1,6 @@
 {
   "name": "hilan-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for Hilan (Hilanet, net.hilan.co.il) employee self-service — pull payslips and Form 106 into an AI assistant, for any tenant.",
   "type": "module",
   "bin": {
