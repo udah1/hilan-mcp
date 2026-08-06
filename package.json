@@ -14,6 +14,7 @@
   "scripts": {
     "start:mcp": "tsx src/mcp/Server.ts",
     "build": "tsc",
+    "postbuild": "chmod +x dist/cli/index.js",
     "build:watch": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "cli": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts",
