@@ -1,0 +1,89 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+async function freshModule() {
+  vi.resetModules();
+  return import('../utils/updateCheck.js');
+}
+
+let stateDir: string;
+
+beforeEach(() => {
+  stateDir = mkdtempSync(join(tmpdir(), 'hilan-mcp-update-check-'));
+  process.env.HILAN_UPDATE_CHECK_STATE_DIR = stateDir;
+});
+
+afterEach(() => {
+  delete process.env.HILAN_UPDATE_CHECK_STATE_DIR;
+  rmSync(stateDir, { recursive: true, force: true });
+  vi.unstubAllGlobals();
+});
+
+function mockRegistryVersion(version: string | null) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({
+      ok: version !== null,
+      json: async () => ({ version }),
+    }))
+  );
+}
+
+describe('checkForUpdateNotice', () => {
+  it('returns null when the registry has no newer version than current', async () => {
+    const { checkForUpdateNotice, getCurrentVersion } = await freshModule();
+    mockRegistryVersion(getCurrentVersion());
+    expect(await checkForUpdateNotice()).toBeNull();
+  });
+
+  it('returns a notice the first time a newer version is seen', async () => {
+    const { checkForUpdateNotice, getCurrentVersion } = await freshModule();
+    const current = getCurrentVersion();
+    const [major, minor, patch] = current.split('.').map(Number);
+    const newer = `${major}.${minor}.${patch + 1}`;
+    mockRegistryVersion(newer);
+
+    const notice = await checkForUpdateNotice();
+    expect(notice).not.toBeNull();
+    expect(notice?.latestVersion).toBe(newer);
+    expect(notice?.currentVersion).toBe(current);
+  });
+
+  it('does not repeat the notice for the same version on an immediate second call', async () => {
+    const { checkForUpdateNotice, getCurrentVersion } = await freshModule();
+    const current = getCurrentVersion();
+    const [major, minor, patch] = current.split('.').map(Number);
+    const newer = `${major}.${minor}.${patch + 1}`;
+    mockRegistryVersion(newer);
+
+    const first = await checkForUpdateNotice();
+    const second = await checkForUpdateNotice();
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+  });
+
+  it('never re-notifies about a version once dismissed', async () => {
+    const { checkForUpdateNotice, dismissUpdateVersion, getCurrentVersion } = await freshModule();
+    const current = getCurrentVersion();
+    const [major, minor, patch] = current.split('.').map(Number);
+    const newer = `${major}.${minor}.${patch + 1}`;
+    mockRegistryVersion(newer);
+
+    dismissUpdateVersion(newer);
+    const notice = await checkForUpdateNotice();
+    expect(notice).toBeNull();
+  });
+
+  it('never throws when the registry is unreachable', async () => {
+    const { checkForUpdateNotice } = await freshModule();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network down');
+      })
+    );
+    await expect(checkForUpdateNotice()).resolves.toBeNull();
+  });
+});

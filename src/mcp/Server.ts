@@ -8,6 +8,7 @@ import { HilanClient } from '../services/HilanClient.js';
 import { TenantService } from '../services/TenantService.js';
 import { getDefaultTenantInput } from '../utils/env.js';
 import { redactError } from '../utils/redact.js';
+import { checkForUpdateNotice, dismissUpdateVersion, getCurrentVersion } from '../utils/updateCheck.js';
 import '../utils/consoleRedirect.js';
 import { configureLogger } from '../utils/logger.js';
 configureLogger({ enableConsoleOutput: true });
@@ -40,7 +41,7 @@ class Server {
   private tools: Map<string, { handler: ToolHandler; schema?: ToolSchema }> = new Map();
 
   constructor() {
-    this.server = new McpServer({ name: 'hilan-mcp-server', version: '0.1.0' });
+    this.server = new McpServer({ name: 'hilan-mcp-server', version: getCurrentVersion() });
     this.databaseService = getDbInstance();
     this.tenantService = new TenantService(this.databaseService);
     this.setupTools();
@@ -70,7 +71,16 @@ class Server {
     this.server.tool(name, description || '', inputSchema || {}, async (params: Record<string, unknown>) => {
       try {
         const result = await handler(params);
-        return this.textResponse(JSON.stringify(result));
+        // Attach an update notice (at most once/day, never for a version the
+        // user already dismissed) to whichever tool the agent happens to
+        // call next — this server has no UI of its own, so the AI agent is
+        // the only channel back to the user. See utils/updateCheck.ts.
+        const updateNotice = name === 'dismissUpdateNotice' ? null : await checkForUpdateNotice();
+        const payload =
+          updateNotice && result && typeof result === 'object' && !Array.isArray(result)
+            ? { ...result, _updateNotice: updateNotice.message }
+            : result;
+        return this.textResponse(JSON.stringify(payload));
       } catch (error: unknown) {
         const safeMessage = redactError(error) || `Error in ${name}`;
         console.error(`Error in ${name}:`, safeMessage);
@@ -101,6 +111,23 @@ class Server {
   }
 
   private setupTools() {
+    this.registerTool(
+      'dismissUpdateNotice',
+      async (params: Record<string, unknown>) => {
+        const version = String(params.version || '').trim();
+        if (!version) {
+          throw new Error('version is required (the exact version string from the update notice you received)');
+        }
+        dismissUpdateVersion(version);
+        return { success: true, dismissedVersion: version };
+      },
+      {
+        description:
+          'Call this after the user declines an update offered via an "_updateNotice" field on a previous tool response, passing that same version string, so hilan-mcp stops mentioning that specific version. It will still notify about a newer version later.',
+        inputSchema: { version: z.string().describe('The version string from the _updateNotice you want to dismiss, e.g. "0.2.0"') },
+      }
+    );
+
     this.registerTool(
       'listTenants',
       async () => {

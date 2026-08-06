@@ -175,6 +175,18 @@ If a user asks you to set up `hilan-mcp` for them:
 | `getPersonalDetails(tenant?)` | Logs in and returns personal details (name, national ID, birthdate, address, phone, email, work start date, job type). Live lookup only — **not persisted** to the local database. |
 | `debugCallAsmx(tenant?, servicePath, body?)` | **Debug/exploration only, disabled by default** — raw pass-through to any `.asmx` endpoint on a logged-in session, for probing API behavior. Requires `HILAN_ENABLE_DEBUG_TOOLS=1` in the server's `env` block; not registered otherwise. |
 | `debugDownloadPdf(tenant?, relativeUrl, fileName)` | **Debug/exploration only, disabled by default** — download an arbitrary relative PDF URL (e.g. one returned by `debugCallAsmx`) to inspect it. Same `HILAN_ENABLE_DEBUG_TOOLS=1` gate. Filenames are sanitized (no path traversal) and URLs are restricted to the tenant's own origin (no SSRF). |
+| `dismissUpdateNotice(version)` | Call this if the user declines an update you offered them (see "Update notifications" below), so that exact version isn't mentioned again. |
+
+**Update notifications**: this server has no UI of its own, so update
+checks piggyback on whatever tool the agent happens to call next. At most
+once a day, a successful tool response may include an extra
+`_updateNotice` field with a message like *"A new hilan-mcp version is
+available: 0.1.0 -> 0.2.0..."* — if you're the AI agent reading this, tell
+the user and ask if they'd like to update; if they say no, call
+`dismissUpdateNotice` with that version so it isn't raised again (a newer
+version will still be announced later). The check itself hits the npm
+registry with a 3s timeout and silently no-ops if it's unreachable (e.g.
+offline, corporate proxy) — it never fails a tool call.
 
 **Concurrency note**: every tool call for a given tenant is automatically
 queued and run one-at-a-time internally (see `TenantService.runExclusive`)

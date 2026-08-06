@@ -13,7 +13,7 @@ import type {
   TenantCapability,
 } from '../types.js';
 
-function getAppDataPath() {
+export function getAppDataPath() {
   const home = homedir();
 
   switch (process.platform) {
