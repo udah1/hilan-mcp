@@ -2,7 +2,7 @@
 
 # hilan-mcp
 
-**An MCP server for [Hilan](https://net.hilan.co.il) (Hilanet)** — pull your payslips and Form 106 into any AI assistant, for any Hilan tenant.
+**An MCP server for [Hilan](https://net.hilan.co.il) (Hilanet / חילן, חילנט)** — pull your payslips and Form 106 into any AI assistant, for any Hilan tenant.
 
 [![npm version](https://img.shields.io/npm/v/hilan-mcp.svg?color=cb3837&logo=npm)](https://www.npmjs.com/package/hilan-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/hilan-mcp.svg?color=blue)](https://www.npmjs.com/package/hilan-mcp)
@@ -208,6 +208,7 @@ If a user asks you to set up `hilan-mcp` for them:
 | `resyncPayslipMonth` | Re-fetch one specific month, overwriting what's stored. |
 | `syncForm106` | Download the Form 106 PDF for a given year. |
 | `downloadCombinedPayslipsPdf` | One PDF covering a whole month range. |
+| `getSalaryTrends` | Yearly averages, YoY %, CAGR, and notable raises — computed locally. |
 | `listTables` / `describeTable` | Inspect the queryable local schema. |
 | `query` | Run read-only SQL against local payslip/Form106 data. |
 | `getPersonalDetails` | Live lookup of personal details (not persisted). |
@@ -231,6 +232,9 @@ Logs in and downloads the Form 106 PDF for a given year (or the tenant's default
 
 #### `downloadCombinedPayslipsPdf(tenant?, fromMonth, toMonth, destDir?)`
 Downloads **one PDF covering a whole month range** (e.g. all of 2015–2024) instead of one file per month. Automatically splits into multiple files if the range would otherwise exceed the server's URL length limit (see [Reliability notes](#reliability-notes-learned-from-a-real-end-to-end-run)) — practical ceiling is roughly 10–15 years per chunk.
+
+#### `getSalaryTrends(tenant?, fromYear?, toYear?)`
+Computes salary growth trends **from locally-synced payslips only** — no live login, no network call. Returns yearly average Bruto/Neto, year-over-year % change between adjacent years, CAGR between the first and last full (12-month) calendar year, overall growth (first vs. last synced month), and "notable jumps" (≥10% YoY change in Bruto). Optional `fromYear`/`toYear` scope the calendar years considered. Prefer this over hand-rolling aggregation with `query` — grouping/sorting by plain `period` text gets cross-year chronology wrong (e.g. `"01_2011"` sorts before `"02_2010"`); this tool sorts by actual calendar month internally.
 
 #### `listTables()` / `describeTable(table)`
 Lists queryable tables (`payslips`, `form106` only) and their columns/indexes.

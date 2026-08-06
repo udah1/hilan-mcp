@@ -13,6 +13,75 @@ import type {
   TenantCapability,
 } from '../types.js';
 
+/**
+ * Parses a stored "MM_YYYY" period key (see TenantService.sanitizePeriodKey)
+ * into a `YYYYMM` integer for correct chronological sorting/grouping —
+ * plain text sorting of `period` groups by month across years (e.g.
+ * "01_2011" < "01_2012" < ... < "02_2011"), not by actual date. Returns
+ * `null` for anything that doesn't match the expected shape, so callers can
+ * skip it rather than mis-sort it.
+ */
+export function computePeriodSort(period: string): number | null {
+  const match = /^(\d{2})_(\d{4})$/.exec(period);
+  if (!match) return null;
+  const month = Number(match[1]);
+  const year = Number(match[2]);
+  if (month < 1 || month > 12) return null;
+  return year * 100 + month;
+}
+
+export interface YearlySalaryTrend {
+  year: number;
+  months: number;
+  /** True when fewer than 12 months of this calendar year are synced locally. */
+  isPartialYear: boolean;
+  avgBruto: number | null;
+  avgNeto: number | null;
+}
+
+export interface YearOverYearChange {
+  fromYear: number;
+  toYear: number;
+  brutoPct: number | null;
+  netoPct: number | null;
+}
+
+export interface SalaryTrendsResult {
+  tenant: string;
+  /** [earliest, latest] calendar year actually covered by the data considered, or null if none. */
+  rangeCoveredYears: [number, number] | null;
+  totalMonths: number;
+  yearly: YearlySalaryTrend[];
+  /** Year-over-year change for each pair of *adjacent* calendar years present in `yearly`. */
+  yoy: YearOverYearChange[];
+  /** Entries from `yoy` where the absolute Bruto change is >= `jumpThresholdPct`. */
+  notableJumps: YearOverYearChange[];
+  jumpThresholdPct: number;
+  overall: {
+    firstPeriod: string | null;
+    firstPeriodLabel: string | null;
+    firstBruto: number | null;
+    firstNeto: number | null;
+    lastPeriod: string | null;
+    lastPeriodLabel: string | null;
+    lastBruto: number | null;
+    lastNeto: number | null;
+    brutoGrowthPct: number | null;
+    netoGrowthPct: number | null;
+  };
+  /** CAGR between the first and last *full* (12-month) calendar year in range; null if fewer than 2 full years are available. */
+  cagr: {
+    fromYear: number;
+    toYear: number;
+    brutoCagrPct: number | null;
+    netoCagrPct: number | null;
+  } | null;
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
 export function getAppDataPath() {
   const home = homedir();
 
@@ -209,6 +278,7 @@ export class SQLiteDatabaseService {
         neto REAL,
         salary_parts TEXT,
         pdf_path TEXT,
+        period_sort INTEGER,
         fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE (tenant_subdomain, period)
       );
@@ -221,6 +291,33 @@ export class SQLiteDatabaseService {
         UNIQUE (tenant_subdomain, year)
       );
     `);
+
+    this.migratePayslipsPeriodSort(db);
+  }
+
+  /**
+   * Older databases (created before `period_sort` existed) won't have the
+   * column yet — SQLite's `CREATE TABLE IF NOT EXISTS` above is a no-op for
+   * them. Add it and backfill from the existing `period` values so
+   * chronological sorting/grouping (used by `getSalaryTrends`) works
+   * without requiring a full re-sync.
+   */
+  private migratePayslipsPeriodSort(db: Database): void {
+    const columns = db.prepare('PRAGMA table_info(payslips)').all() as { name: string }[];
+    const hasPeriodSort = columns.some(c => c.name === 'period_sort');
+
+    if (!hasPeriodSort) {
+      db.exec('ALTER TABLE payslips ADD COLUMN period_sort INTEGER');
+      db.exec(`
+        UPDATE payslips
+        SET period_sort = CAST(substr(period, 4, 4) AS INTEGER) * 100 + CAST(substr(period, 1, 2) AS INTEGER)
+        WHERE period_sort IS NULL
+          AND length(period) = 7
+          AND substr(period, 3, 1) = '_'
+      `);
+    }
+
+    db.exec('CREATE INDEX IF NOT EXISTS idx_payslips_tenant_period_sort ON payslips(tenant_subdomain, period_sort)');
   }
 
   public close(): Promise<void> {
@@ -327,15 +424,17 @@ export class SQLiteDatabaseService {
   public async upsertPayslip(row: Omit<PayslipRow, 'fetched_at'>): Promise<void> {
     this.ensureReady();
     const db = this.assertInitialized();
+    const periodSort = computePeriodSort(row.period);
     db.prepare(
-      `INSERT INTO payslips (tenant_subdomain, period, period_label, bruto, neto, salary_parts, pdf_path, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO payslips (tenant_subdomain, period, period_label, bruto, neto, salary_parts, pdf_path, period_sort, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(tenant_subdomain, period) DO UPDATE SET
          period_label = excluded.period_label,
          bruto = excluded.bruto,
          neto = excluded.neto,
          salary_parts = excluded.salary_parts,
          pdf_path = excluded.pdf_path,
+         period_sort = excluded.period_sort,
          fetched_at = datetime('now')`
     ).run(
       row.tenant_subdomain,
@@ -344,7 +443,8 @@ export class SQLiteDatabaseService {
       row.bruto,
       row.neto,
       row.salary_parts,
-      row.pdf_path
+      row.pdf_path,
+      periodSort
     );
   }
 
@@ -355,6 +455,136 @@ export class SQLiteDatabaseService {
       .prepare('SELECT * FROM payslips WHERE tenant_subdomain = ? AND period = ?')
       .get(subdomain, period);
     return (row as PayslipRow | undefined) ?? null;
+  }
+
+  /**
+   * Computes yearly salary trends (average Bruto/Neto, YoY % change, CAGR,
+   * overall growth, notable jumps) directly from locally-synced payslips —
+   * no live login needed. Groups by `period_sort` (see `computePeriodSort`)
+   * rather than the `period` text column, so years sort and group
+   * correctly regardless of month.
+   */
+  public async getSalaryTrends(
+    subdomain: string,
+    fromYear?: number,
+    toYear?: number,
+    jumpThresholdPct = 10
+  ): Promise<SalaryTrendsResult> {
+    this.ensureReady();
+    const db = this.assertInitialized();
+
+    const minSort = fromYear !== undefined ? fromYear * 100 + 1 : null;
+    const maxSort = toYear !== undefined ? toYear * 100 + 12 : null;
+
+    const rangeClauses: string[] = ['tenant_subdomain = ?', 'period_sort IS NOT NULL'];
+    const rangeParams: unknown[] = [subdomain];
+    if (minSort !== null) {
+      rangeClauses.push('period_sort >= ?');
+      rangeParams.push(minSort);
+    }
+    if (maxSort !== null) {
+      rangeClauses.push('period_sort <= ?');
+      rangeParams.push(maxSort);
+    }
+    const whereClause = rangeClauses.join(' AND ');
+
+    const yearlyRows = db
+      .prepare(
+        `SELECT
+           (period_sort / 100) AS year,
+           COUNT(*) AS months,
+           AVG(bruto) AS avgBruto,
+           AVG(neto) AS avgNeto
+         FROM payslips
+         WHERE ${whereClause}
+         GROUP BY year
+         ORDER BY year ASC`
+      )
+      .all(...rangeParams) as { year: number; months: number; avgBruto: number | null; avgNeto: number | null }[];
+
+    const yearly: YearlySalaryTrend[] = yearlyRows.map(r => ({
+      year: r.year,
+      months: r.months,
+      isPartialYear: r.months < 12,
+      avgBruto: r.avgBruto === null ? null : round1(r.avgBruto),
+      avgNeto: r.avgNeto === null ? null : round1(r.avgNeto),
+    }));
+
+    const yoy: YearOverYearChange[] = [];
+    for (let i = 1; i < yearly.length; i++) {
+      const prev = yearly[i - 1];
+      const cur = yearly[i];
+      if (cur.year - prev.year !== 1) continue; // gap in the data — not a meaningful YoY comparison
+      const brutoPct =
+        prev.avgBruto && cur.avgBruto !== null ? round1(((cur.avgBruto - prev.avgBruto) / prev.avgBruto) * 100) : null;
+      const netoPct =
+        prev.avgNeto && cur.avgNeto !== null ? round1(((cur.avgNeto - prev.avgNeto) / prev.avgNeto) * 100) : null;
+      yoy.push({ fromYear: prev.year, toYear: cur.year, brutoPct, netoPct });
+    }
+
+    const notableJumps = yoy.filter(c => c.brutoPct !== null && Math.abs(c.brutoPct) >= jumpThresholdPct);
+
+    const firstRow = db
+      .prepare(
+        `SELECT period, period_label, bruto, neto FROM payslips WHERE ${whereClause} ORDER BY period_sort ASC LIMIT 1`
+      )
+      .get(...rangeParams) as { period: string; period_label: string | null; bruto: number | null; neto: number | null } | undefined;
+    const lastRow = db
+      .prepare(
+        `SELECT period, period_label, bruto, neto FROM payslips WHERE ${whereClause} ORDER BY period_sort DESC LIMIT 1`
+      )
+      .get(...rangeParams) as { period: string; period_label: string | null; bruto: number | null; neto: number | null } | undefined;
+
+    const brutoGrowthPct =
+      firstRow?.bruto && lastRow?.bruto !== undefined && lastRow?.bruto !== null
+        ? round1(((lastRow.bruto - firstRow.bruto) / firstRow.bruto) * 100)
+        : null;
+    const netoGrowthPct =
+      firstRow?.neto && lastRow?.neto !== undefined && lastRow?.neto !== null
+        ? round1(((lastRow.neto - firstRow.neto) / firstRow.neto) * 100)
+        : null;
+
+    const fullYears = yearly.filter(y => !y.isPartialYear && y.avgBruto !== null && y.avgNeto !== null);
+    let cagr: SalaryTrendsResult['cagr'] = null;
+    if (fullYears.length >= 2) {
+      const startYear = fullYears[0];
+      const endYear = fullYears[fullYears.length - 1];
+      const yearSpan = endYear.year - startYear.year;
+      if (yearSpan > 0) {
+        const brutoCagrPct =
+          startYear.avgBruto && endYear.avgBruto
+            ? round1((Math.pow(endYear.avgBruto / startYear.avgBruto, 1 / yearSpan) - 1) * 100)
+            : null;
+        const netoCagrPct =
+          startYear.avgNeto && endYear.avgNeto
+            ? round1((Math.pow(endYear.avgNeto / startYear.avgNeto, 1 / yearSpan) - 1) * 100)
+            : null;
+        cagr = { fromYear: startYear.year, toYear: endYear.year, brutoCagrPct, netoCagrPct };
+      }
+    }
+
+    return {
+      tenant: subdomain,
+      rangeCoveredYears: yearly.length > 0 ? [yearly[0].year, yearly[yearly.length - 1].year] : null,
+      totalMonths: yearly.reduce((sum, y) => sum + y.months, 0),
+      yearly,
+      yoy,
+      notableJumps,
+      jumpThresholdPct,
+      overall: {
+        firstPeriod: firstRow?.period ?? null,
+        firstPeriodLabel: firstRow?.period_label ?? null,
+        firstBruto: firstRow?.bruto ?? null,
+        firstNeto: firstRow?.neto ?? null,
+        lastPeriod: lastRow?.period ?? null,
+        lastPeriodLabel: lastRow?.period_label ?? null,
+        lastBruto: lastRow?.bruto ?? null,
+        lastNeto: lastRow?.neto ?? null,
+        brutoGrowthPct,
+        netoGrowthPct,
+      },
+      cagr,
+    };
   }
 
   public async upsertForm106(row: Omit<Form106Row, 'fetched_at'>): Promise<void> {

@@ -349,6 +349,40 @@ class Server {
     );
 
     this.registerTool(
+      'getSalaryTrends',
+      async params => {
+        const { tenant, fromYear, toYear } = params as { tenant?: string; fromYear?: number; toYear?: number };
+        return this.withDb(async db => {
+          const resolvedTenant = await this.resolveTenant(tenant);
+          const trends = await db.getSalaryTrends(resolvedTenant, fromYear, toYear);
+          return { success: true, data: trends };
+        });
+      },
+      {
+        description:
+          'Computes salary growth trends from locally-synced payslips (no live login needed): yearly average Bruto/Neto, year-over-year % change between adjacent years, CAGR between the first and last full (12-month) calendar year, overall growth (first vs. last synced month), and notable jumps (>=10% YoY change in Bruto). Prefer this over raw `query` for "how has my salary grown" style questions — it also groups/sorts by actual calendar year, which plain `period` text sorting gets wrong across years (e.g. "01_2011" sorts before "02_2010").',
+        inputSchema: {
+          tenant: z
+            .string()
+            .optional()
+            .describe(
+              'Tenant subdomain, e.g. "amdocs". Optional if this server has COMPANY_URL / COMPANY_TENANT / COMPANY_CODE set in its env'
+            ),
+          fromYear: z
+            .number()
+            .int()
+            .optional()
+            .describe('Only include calendar years >= this (e.g. 2015). Defaults to the earliest synced year.'),
+          toYear: z
+            .number()
+            .int()
+            .optional()
+            .describe('Only include calendar years <= this (e.g. 2024). Defaults to the latest synced year.'),
+        },
+      }
+    );
+
+    this.registerTool(
       'listTables',
       async () => {
         return this.withDb(async db => {
