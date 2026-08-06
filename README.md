@@ -1,15 +1,21 @@
 # hilan-mcp
 
+[![npm version](https://img.shields.io/npm/v/hilan-mcp.svg)](https://www.npmjs.com/package/hilan-mcp)
+[![license](https://img.shields.io/npm/l/hilan-mcp.svg)](https://github.com/udah1/hilan-mcp/blob/master/LICENSE)
+
 An MCP server for **Hilan** (Hilanet, `net.hilan.co.il`) — the Israeli
 payroll/HR self-service portal used by many companies. It lets an AI
 assistant pull your **payslips** and **Form 106** (annual tax summary) for
 any Hilan tenant, not just one specific employer.
 
-Modeled on [`asher-mcp`](https://github.com/) (a sibling project solving the
-same "log into an Israeli site, cache results, expose via MCP" problem for
-bank/credit-card scrapers): encrypted local storage, no plaintext secrets in
-`mcp.json`, tools that return aggregated data instead of dumping raw vendor
-JSON into your context window.
+Published on npm as [`hilan-mcp`](https://www.npmjs.com/package/hilan-mcp) —
+install/run it with `npx hilan-mcp`, no cloning required (see Setup below).
+
+Modeled on `asher-mcp` (a sibling project solving the same "log into an
+Israeli site, cache results, expose via MCP" problem for bank/credit-card
+scrapers): encrypted local storage, no plaintext secrets in `mcp.json`,
+tools that return aggregated data instead of dumping raw vendor JSON into
+your context window.
 
 ## How it works
 
