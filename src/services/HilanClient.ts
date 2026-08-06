@@ -1,6 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type APIResponse } from 'playwright';
 import { writeFileSync, chmodSync } from 'fs';
-import { join, basename, resolve } from 'path';
+import { join, basename, resolve, relative, isAbsolute } from 'path';
 import type { LoginFieldValues } from '../types.js';
 
 /**
@@ -16,10 +16,40 @@ export function safeDestPath(destDir: string, fileName: string): string {
   }
   const resolvedDir = resolve(destDir);
   const resolvedPath = resolve(resolvedDir, safeName);
-  if (resolvedPath !== resolvedDir && !resolvedPath.startsWith(resolvedDir + '/')) {
+  // path.relative + the '..'/absolute check (rather than a raw string
+  // startsWith(resolvedDir + '/')) is the portable way to test containment,
+  // since it uses the platform's own separator instead of assuming '/'.
+  const rel = relative(resolvedDir, resolvedPath);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new HilanLoginError(`Refusing to write outside the destination directory: ${fileName}`);
   }
   return resolvedPath;
+}
+
+/**
+ * Resolves a (possibly relative) PDF URL against the tenant's own origin,
+ * refusing any absolute URL that points elsewhere. Extracted as a pure
+ * function (no BrowserContext needed) so it's directly unit-testable.
+ *
+ * Relative PDF URLs returned by the JSON API (e.g. `PaySlipData.Url`) are
+ * relative to the app's `/Hilannetv2` virtual directory, not the domain
+ * root — confirmed against a real browser network capture
+ * (`.../Hilannetv2/PersonalFile/PdfPaySlip.aspx/...`). Absolute URLs are
+ * only accepted if they're same-origin with the tenant itself — this is an
+ * authenticated fetch that sends the tenant's session cookies
+ * (`credentials: 'include'`), so letting a caller (e.g. the debug tools,
+ * whose URL can come from an AI agent) redirect it to an arbitrary domain
+ * would be an SSRF/cookie-leak vector.
+ */
+export function resolvePdfUrl(subdomain: string, url: string): string {
+  const baseUrl = normalizeBaseUrl(subdomain);
+  if (url.startsWith('http')) {
+    if (!url.startsWith(`${baseUrl}/`)) {
+      throw new HilanLoginError(`Refusing to fetch a PDF URL outside the tenant's own origin: ${url}`);
+    }
+    return url;
+  }
+  return `${baseUrl}/Hilannetv2/${url.replace(/^\/+/, '')}`;
 }
 
 export class HilanUnsupportedError extends Error {
@@ -359,24 +389,7 @@ export class HilanClient {
     fileName: string
   ): Promise<string> {
     const baseUrl = normalizeBaseUrl(subdomain);
-    // Relative PDF URLs returned by the JSON API (e.g. `PaySlipData.Url`)
-    // are relative to the app's `/Hilannetv2` virtual directory, not the
-    // domain root — confirmed against a real browser network capture
-    // (`.../Hilannetv2/PersonalFile/PdfPaySlip.aspx/...`). Absolute URLs are
-    // only accepted if they're same-origin with the tenant itself — this is
-    // an authenticated fetch that sends the tenant's session cookies
-    // (`credentials: 'include'`), so letting a caller (e.g. the debug tools,
-    // whose URL can come from an AI agent) redirect it to an arbitrary
-    // domain would be an SSRF/cookie-leak vector.
-    let absoluteUrl: string;
-    if (url.startsWith('http')) {
-      if (!url.startsWith(`${baseUrl}/`)) {
-        throw new HilanLoginError(`Refusing to fetch a PDF URL outside the tenant's own origin: ${url}`);
-      }
-      absoluteUrl = url;
-    } else {
-      absoluteUrl = `${baseUrl}/Hilannetv2/${url.replace(/^\/+/, '')}`;
-    }
+    const absoluteUrl = resolvePdfUrl(subdomain, url);
 
     // The Amdocs network's corporate TLS-intercepting proxy occasionally
     // truncates a response mid-stream (observed: exact 32768-byte cutoffs,

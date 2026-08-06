@@ -54,6 +54,7 @@ class Server {
 
     process.on('SIGINT', async () => {
       await this.server.close();
+      await HilanClient.shutdown();
       process.exit(0);
     });
   }
@@ -382,6 +383,7 @@ class Server {
 
   public async close() {
     await this.server.close();
+    await HilanClient.shutdown();
   }
 }
 

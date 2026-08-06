@@ -1,7 +1,8 @@
-import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { format } from 'util';
 import { fileURLToPath } from 'url';
+import { redactSecrets } from './redact.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -11,7 +12,13 @@ const MAX_LOG_SIZE = 10 * 1024 * 1024;
 const MAX_LOG_FILES = 5;
 
 if (!existsSync(LOGS_DIR)) {
-  mkdirSync(LOGS_DIR, { recursive: true });
+  mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
+} else {
+  try {
+    chmodSync(LOGS_DIR, 0o700);
+  } catch {
+    // best-effort — e.g. not the directory owner; not fatal
+  }
 }
 
 class RollingFileLogger {
@@ -32,7 +39,7 @@ class RollingFileLogger {
 
   private ensureStream() {
     if (!this.stream) {
-      this.stream = createWriteStream(this.filePath, { flags: 'a' });
+      this.stream = createWriteStream(this.filePath, { flags: 'a', mode: 0o600 });
       this.stream.on('error', err => {
         console.error('Logging error:', err);
         this.stream = null;
@@ -99,7 +106,10 @@ class RollingFileLogger {
   write(level: string, message: string, ...args: any[]) {
     this.rotateIfNeeded();
     const timestamp = new Date().toISOString();
-    const formattedMessage = format(message, ...args);
+    // Belt-and-suspenders: callers should already redact before logging, but
+    // this is the one choke point all console.warn/error output passes
+    // through, so redact here too in case a future call site forgets.
+    const formattedMessage = redactSecrets(format(message, ...args));
     const logLine = `[${timestamp}] [${level.toUpperCase()}] ${formattedMessage}\n`;
 
     if (this.stream) {

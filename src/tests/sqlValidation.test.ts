@@ -92,4 +92,23 @@ describe('validateSelectQuery', () => {
     const result = validateSelectQuery('SELECT * FROM (SELECT * FROM credentials) x');
     expect(result.valid).toBe(false);
   });
+
+  it('allows PRAGMA index_list on an allowed table', () => {
+    expect(validateSelectQuery('PRAGMA index_list(payslips)').valid).toBe(true);
+  });
+
+  it('blocks PRAGMA index_list on credentials', () => {
+    const result = validateSelectQuery('PRAGMA index_list(credentials)');
+    expect(result.valid).toBe(false);
+  });
+
+  it('blocks ATTACH DATABASE', () => {
+    const result = validateSelectQuery("ATTACH DATABASE '/tmp/evil.db' AS evil");
+    expect(result.valid).toBe(false);
+  });
+
+  it('blocks DETACH DATABASE', () => {
+    const result = validateSelectQuery('DETACH DATABASE evil');
+    expect(result.valid).toBe(false);
+  });
 });

@@ -3,6 +3,7 @@ import { join } from 'path';
 import type { BrowserContext } from 'playwright';
 import { SQLiteDatabaseService, getPdfStoragePath } from './DatabaseService.js';
 import { HilanClient, HilanLoginError } from './HilanClient.js';
+import { redactError } from '../utils/redact.js';
 import type {
   Form106InitialDataResponse,
   PaySlipDateOption,
@@ -208,7 +209,10 @@ export class TenantService {
         // A PDF download failure for one month (e.g. the file isn't
         // published on the site yet) shouldn't discard the structured
         // Bruto/Neto data we already have for this and other months.
-        pdfError = error instanceof Error ? error.message : String(error);
+        // This is returned to the caller as part of a *successful* sync result
+        // (not thrown), so it bypasses Server.ts's error-path redaction —
+        // must redact here too, since Playwright errors can embed cookies.
+        pdfError = redactError(error);
       }
     }
 

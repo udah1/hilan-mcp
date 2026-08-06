@@ -30,7 +30,13 @@ function getAppDataPath() {
 export function getPdfStoragePath(): string {
   const dir = join(getAppDataPath(), 'HilanMcp', 'pdfs');
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } else {
+    try {
+      chmodSync(dir, 0o700);
+    } catch {
+      // best-effort
+    }
   }
   return dir;
 }
@@ -46,7 +52,13 @@ export class SQLiteDatabaseService {
     const dbPath = join(appDataDir, 'hilan.db');
 
     if (!existsSync(appDataDir)) {
-      mkdirSync(appDataDir, { recursive: true });
+      mkdirSync(appDataDir, { recursive: true, mode: 0o700 });
+    } else {
+      try {
+        chmodSync(appDataDir, 0o700);
+      } catch {
+        // best-effort
+      }
     }
 
     return dbPath;
@@ -58,7 +70,7 @@ export class SQLiteDatabaseService {
     if (dbPath) {
       const dir = dirname(dbPath);
       if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
     }
   }
@@ -99,9 +111,14 @@ export class SQLiteDatabaseService {
     const key = await encryptionKeyService.ensureKeyIsAvailable();
 
     try {
+      // SQLCipher's `key`/`rekey` pragmas take a single-quoted string literal,
+      // not a bound parameter — a literal `'` in a user-chosen key would
+      // otherwise break out of the literal and corrupt the pragma. Escape it
+      // the standard SQL way (double it) rather than rejecting such keys.
+      const escapedKey = key.replace(/'/g, "''");
       db.pragma(`cipher='sqlcipher'`);
       db.pragma(`legacy=4`);
-      db.pragma(`${isNewDatabase ? 'rekey' : 'key'}='${key}'`);
+      db.pragma(`${isNewDatabase ? 'rekey' : 'key'}='${escapedKey}'`);
       db.prepare('PRAGMA schema_version').get();
     } catch (error) {
       encryptionKeyService.clearKey();
