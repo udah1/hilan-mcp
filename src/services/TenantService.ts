@@ -30,6 +30,27 @@ export interface Form106SyncResult {
 export class TenantService {
   constructor(private db: SQLiteDatabaseService) {}
 
+  /**
+   * Hilan's site (and/or the network path to it, e.g. a corporate proxy)
+   * doesn't handle concurrent requests from the same session well —
+   * observed as `page.goto` timeouts when 8 tool calls for the same tenant
+   * ran in parallel. Every public entry point below is routed through this
+   * per-tenant queue so callers (including an AI agent that doesn't know
+   * better) can never trigger that failure mode; different tenants still
+   * run fully in parallel.
+   */
+  private tenantQueues = new Map<string, Promise<unknown>>();
+
+  private runExclusive<T>(subdomain: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.tenantQueues.get(subdomain) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    // Swallow rejections in the chain itself (each caller still gets the
+    // real error via the returned promise) so one failure doesn't
+    // permanently wedge the queue for this tenant.
+    this.tenantQueues.set(subdomain, run.catch(() => undefined));
+    return run;
+  }
+
   private tenantPdfDir(subdomain: string): string {
     const dir = join(getPdfStoragePath(), subdomain);
     if (!existsSync(dir)) {
@@ -167,7 +188,11 @@ export class TenantService {
     };
   }
 
-  public async syncPayslips(subdomain: string, monthsBack = 3, skipPdf = false): Promise<PayslipSyncResult[]> {
+  public syncPayslips(subdomain: string, monthsBack = 3, skipPdf = false): Promise<PayslipSyncResult[]> {
+    return this.runExclusive(subdomain, () => this.syncPayslipsImpl(subdomain, monthsBack, skipPdf));
+  }
+
+  private async syncPayslipsImpl(subdomain: string, monthsBack: number, skipPdf: boolean): Promise<PayslipSyncResult[]> {
     const context = await this.ensureLoggedIn(subdomain);
     const initial = await this.bootstrap(subdomain, context);
     const tenant = await this.db.getTenant(subdomain);
@@ -193,9 +218,19 @@ export class TenantService {
    * `GetMultiplePaySlipData` accepts more months than the UI's 12-month
    * picker allows. Not meant for regular use.
    */
-  public async debugCallAsmx(subdomain: string, servicePath: string, body: Record<string, unknown>): Promise<unknown> {
-    const context = await this.ensureLoggedIn(subdomain);
-    return HilanClient.callAsmx(subdomain, context, servicePath, body);
+  public debugCallAsmx(subdomain: string, servicePath: string, body: Record<string, unknown>): Promise<unknown> {
+    return this.runExclusive(subdomain, async () => {
+      const context = await this.ensureLoggedIn(subdomain);
+      return HilanClient.callAsmx(subdomain, context, servicePath, body);
+    });
+  }
+
+  /** DEBUG only: download an arbitrary relative PDF URL (e.g. from debugCallAsmx) to inspect it. */
+  public debugDownloadPdf(subdomain: string, relativeUrl: string, fileName: string): Promise<string> {
+    return this.runExclusive(subdomain, async () => {
+      const context = await this.ensureLoggedIn(subdomain);
+      return HilanClient.downloadPdf(subdomain, context, relativeUrl, this.tenantPdfDir(subdomain), fileName);
+    });
   }
 
   /**
@@ -204,7 +239,11 @@ export class TenantService {
    * `period` accepts either the stored key format ("MM_YYYY") or the raw
    * Hilan month format ("MM/YYYY").
    */
-  public async resyncPayslipMonth(subdomain: string, period: string, skipPdf = false): Promise<PayslipSyncResult> {
+  public resyncPayslipMonth(subdomain: string, period: string, skipPdf = false): Promise<PayslipSyncResult> {
+    return this.runExclusive(subdomain, () => this.resyncPayslipMonthImpl(subdomain, period, skipPdf));
+  }
+
+  private async resyncPayslipMonthImpl(subdomain: string, period: string, skipPdf: boolean): Promise<PayslipSyncResult> {
     const context = await this.ensureLoggedIn(subdomain);
     const tenant = await this.db.getTenant(subdomain);
     let employeeId = tenant?.employee_id ?? null;
@@ -220,7 +259,56 @@ export class TenantService {
     return this.processPayslipMonth(subdomain, context, employeeId, dateOption, { skipPdf });
   }
 
-  public async syncForm106(subdomain: string, year?: string): Promise<Form106SyncResult> {
+  /**
+   * Live lookup only — not persisted to the encrypted DB, since it's PII
+   * (address, phone, national ID, spouse info) that doesn't need to be
+   * cached the way payslip numbers do. Returns a curated subset of
+   * `PersonalDetailsApiapi.asmx/GetInitialData`'s response, stripping out
+   * the large `Constants`/`Images`/`Enums` UI-localization dictionaries.
+   */
+  public getPersonalDetails(subdomain: string): Promise<Record<string, unknown>> {
+    return this.runExclusive(subdomain, async () => {
+      const context = await this.ensureLoggedIn(subdomain);
+      const resp = await HilanClient.callAsmx<Record<string, unknown>>(
+        subdomain,
+        context,
+        'PersonalDetailsApiapi.asmx/GetInitialData',
+        {}
+      );
+      const fields = [
+        'FirstName',
+        'LastName',
+        'Identification',
+        'Birthdate',
+        'Age',
+        'Gender',
+        'MaritalStatus',
+        'Israeli',
+        'City',
+        'Street',
+        'ZipCode',
+        'Phone',
+        'AnotherPhone',
+        'Email',
+        'EmailHome',
+        'DateOfSeniority',
+        'TypeOfJob',
+        'SpouseWorkDetails',
+        'Children',
+      ];
+      const picked: Record<string, unknown> = {};
+      for (const field of fields) {
+        if (field in resp) picked[field] = resp[field];
+      }
+      return picked;
+    });
+  }
+
+  public syncForm106(subdomain: string, year?: string): Promise<Form106SyncResult> {
+    return this.runExclusive(subdomain, () => this.syncForm106Impl(subdomain, year));
+  }
+
+  private async syncForm106Impl(subdomain: string, year?: string): Promise<Form106SyncResult> {
     const context = await this.ensureLoggedIn(subdomain);
 
     let tenant = await this.db.getTenant(subdomain);

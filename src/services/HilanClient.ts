@@ -386,7 +386,14 @@ export class HilanClient {
       }
 
       const buffer = Buffer.from(result.base64, 'base64');
-      const looksTruncated = !buffer.subarray(-2048).includes('%%EOF');
+      // Some genuine (non-truncated) Hilan PDFs — observed on an old 2010
+      // payslip, and on large multi-month combined PDFs — have anywhere
+      // from several KB to hundreds of KB of trailing null-byte padding
+      // *after* a perfectly valid `%%EOF` marker, so checking only a
+      // trailing window gives false positives. Search the whole buffer
+      // instead; genuine truncation (the proxy cutting the stream mid-page)
+      // won't have written a `%%EOF` token anywhere.
+      const looksTruncated = !buffer.includes('%%EOF');
       if (looksTruncated) {
         lastError = `response looked truncated (${buffer.length} bytes, no %%EOF trailer found) on attempt ${attempt}`;
         continue;

@@ -135,13 +135,16 @@ Ask your assistant things like "sync my last 3 payslips from Hilan" or
 | `listTables` | Lists queryable tables (`payslips`, `form106` only). |
 | `describeTable(table)` | Columns + indexes for `payslips` or `form106`. |
 | `query(sql)` | SELECT-only SQL against `payslips`/`form106`. **`credentials`, `sessions`, and `tenants` are hard-blocked** — see Security below. Good for quick questions like "how much net/gross did I earn in June 2026" without touching the network at all. |
-| `debugCallAsmx(tenant?, servicePath, body?)` | **Debug/exploration only** — raw pass-through to any `PaySlipApiapi`/`Form106Apiapi` `.asmx` endpoint on a logged-in session, for probing API behavior (e.g. whether an endpoint's UI limit is actually enforced server-side). Not meant for regular use. |
+| `getPersonalDetails(tenant?)` | Logs in and returns personal details (name, national ID, birthdate, address, phone, email, work start date, job type). Live lookup only — **not persisted** to the local database. |
+| `debugCallAsmx(tenant?, servicePath, body?)` | **Debug/exploration only** — raw pass-through to any `.asmx` endpoint on a logged-in session, for probing API behavior. Not meant for regular use. |
+| `debugDownloadPdf(tenant?, relativeUrl, fileName)` | **Debug/exploration only** — download an arbitrary relative PDF URL (e.g. one returned by `debugCallAsmx`) to inspect it. Not meant for regular use. |
 
-**Concurrency note**: don't call multiple tools against the *same tenant*
-in parallel — Hilan's site (and/or the network path to it) doesn't handle
-concurrent requests from one session well and everything will time out.
-Tool calls for the same tenant must be sequential; different tenants are
-independent.
+**Concurrency note**: every tool call for a given tenant is automatically
+queued and run one-at-a-time internally (see `TenantService.runExclusive`)
+— Hilan's site (and/or the network path to it) doesn't handle concurrent
+requests from one session well and everything times out otherwise. You
+don't need to serialize calls yourself; different tenants still run fully
+in parallel.
 
 ## Scope (v1)
 
@@ -172,8 +175,17 @@ work and still save a PDF, just without the parsed Bruto/Neto numbers.
   query strings to `%2F` and gets 404'd by some endpoints.
 - The same corporate proxy occasionally **truncates a PDF response
   mid-stream** (observed: suspiciously round 32768-byte cutoffs) without
-  the fetch itself erroring. `downloadPdf` checks for the standard `%%EOF`
-  PDF trailer and retries up to 3 times before giving up.
+  the fetch itself erroring. `downloadPdf` checks the whole buffer for the
+  standard `%%EOF` PDF trailer (not just the tail — some genuine Hilan
+  PDFs have tens/hundreds of KB of trailing null-byte padding *after* a
+  valid `%%EOF`) and retries up to 3 times before giving up.
+- Combined multi-month PDFs (`PaySlipApiapi.asmx/GetMultiplePaySlipData`,
+  one file covering a date range instead of one per month) hit a hard
+  **HTTP 404 once the URL exceeds ~2048 characters** — that's IIS's
+  default `requestFiltering maxQueryString` limit, not a Hilan-specific
+  cap. In practice that's roughly 24 months (2 years) per combined PDF;
+  requesting the full ~16-year history in one combined file fails. Not an
+  issue for per-month syncing (`syncPayslips`), which never hits this.
 - A tenant's *regular* login page can unconditionally show a "log in with
   a one-time code" button/link even when normal username+password login
   is fully supported and working — don't treat that text alone as proof
@@ -196,6 +208,16 @@ work and still save a PDF, just without the parsed Bruto/Neto numbers.
 - Credential entry (`ingest-creds`) must be run directly by you in your own
   terminal — never through an assistant's shell tool, whose transcript could
   capture what you typed.
+- `debugCallAsmx` is an intentional escape hatch: it lets a logged-in
+  session call **any** `.asmx` endpoint with **any** body, bypassing the
+  curated tools above. It was added for API exploration during
+  development and is one-employee-scoped (same session, same
+  permissions you already have on the site) — it can't reach other
+  employees' data or other tenants — but it could in principle call a
+  write endpoint (Hilan generally gates writes behind approval flows, but
+  this hasn't been audited). Treat it like `query`'s SQL escape hatch:
+  fine for an AI assistant you trust to explore with, not something to
+  expose to untrusted input.
 
 ## Development
 

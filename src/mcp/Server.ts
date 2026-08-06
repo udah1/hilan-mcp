@@ -153,6 +153,30 @@ class Server {
     );
 
     this.registerTool(
+      'getPersonalDetails',
+      async params => {
+        const { tenant } = params as { tenant?: string };
+        return this.withDb(async () => {
+          const resolvedTenant = await this.resolveTenant(tenant);
+          const details = await this.tenantService.getPersonalDetails(resolvedTenant);
+          return { success: true, data: details };
+        });
+      },
+      {
+        description:
+          'Logs in and fetches personal details (name, national ID, birthdate, address, phone, email, work start date, job type). This is a live lookup, not stored in the local database.',
+        inputSchema: {
+          tenant: z
+            .string()
+            .optional()
+            .describe(
+              'Tenant subdomain, e.g. "amdocs". Optional if this server has COMPANY_URL / COMPANY_TENANT / COMPANY_CODE set in its env'
+            ),
+        },
+      }
+    );
+
+    this.registerTool(
       'debugCallAsmx',
       async params => {
         const { tenant, servicePath, body } = params as { tenant?: string; servicePath: string; body?: Record<string, unknown> };
@@ -170,6 +194,27 @@ class Server {
           tenant: z.string().optional(),
           servicePath: z.string().describe('e.g. "PaySlipApiapi.asmx/GetMultiplePaySlipData"'),
           body: z.record(z.unknown()).optional().describe('JSON body to POST'),
+        },
+      }
+    );
+
+    this.registerTool(
+      'debugDownloadPdf',
+      async params => {
+        const { tenant, relativeUrl, fileName } = params as { tenant?: string; relativeUrl: string; fileName: string };
+        if (!relativeUrl || !fileName) throw new Error('relativeUrl and fileName are required');
+        return this.withDb(async () => {
+          const resolvedTenant = await this.resolveTenant(tenant);
+          const path = await this.tenantService.debugDownloadPdf(resolvedTenant, relativeUrl, fileName);
+          return { success: true, data: { path } };
+        });
+      },
+      {
+        description: 'DEBUG/exploration only: download an arbitrary relative PDF URL (e.g. one returned by debugCallAsmx) to inspect it. Not for regular use.',
+        inputSchema: {
+          tenant: z.string().optional(),
+          relativeUrl: z.string(),
+          fileName: z.string(),
         },
       }
     );

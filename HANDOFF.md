@@ -101,7 +101,7 @@ before anything touched disk** — see `api-shapes-key.json` for the field
 |---|---|
 | `PaySlipApiapi.asmx/GetInitialData` | List of available payslip periods + structured salary summary (`Bruto`, `Neto`, named `SalaryParts[]`) for the default period + a PDF URL. **Also the source of `SelectedEmployee.EmployeeId`**, needed for later calls. |
 | `PaySlipApiapi.asmx/GetPaySlipDataForMonth` | Same structured summary for a specific month. Request body: `{ EmployeeId, Months: [...], PaySlipType }`. |
-| `PaySlipApiapi.asmx/GetMultiplePaySlipData` | Takes `{EmployeeId, SelectedMonths: string[]}`; returns **only** `{Url}` — one combined PDF covering the whole range, no per-month structured data. The UI limits its month picker to 12, but the backend itself does **not** enforce that (verified with 24 months in a real request). Not useful for bulk-fetching Bruto/Neto (use per-month `GetPaySlipDataForMonth` for that), but could be used to generate one combined "all payslips" PDF if ever wanted. |
+| `PaySlipApiapi.asmx/GetMultiplePaySlipData` | Takes `{EmployeeId, SelectedMonths: string[]}`; returns **only** `{Url}` — one combined PDF covering the whole range, no per-month structured data. The UI limits its month picker to 12, but the API call itself does **not** enforce that (verified: both 24 and 194 months return a `Url` successfully). However, **downloading** that combined PDF 404s once the resulting URL exceeds ~2048 chars (IIS's default `maxQueryString` limit) — 24 months (~1.2KB URL) downloaded fine (51-page, 1.5MB PDF); 194 months (2211-char URL) 404'd. Not useful for bulk-fetching Bruto/Neto (use per-month `GetPaySlipDataForMonth` for that); only useful for a "give me N years as one PDF" feature, capped to roughly 2-3 years per request. |
 | `Form106Apiapi.asmx/GetInitialData` / `EmployeeChanged` | Available tax years + a PDF URL for Form 106. |
 | `PersonalDetailsApiapi.asmx/GetInitialData` | Full personal details (address/phone/email/marital status/spouse/children; bank fields present but empty for this user) — **v1.1, not in v1 scope**. |
 | `Form101Apiapi.asmx/GetInitialData` | Annual tax-coordination wizard — mostly UI form-definition metadata, complex — **removed from scope entirely**, not worth building against. |
@@ -185,7 +185,15 @@ but unverified) so the server never needs a human to respond to a
 notification; `COMPANY_URL`/`COMPANY_TENANT`/`COMPANY_CODE` env-var
 fallback for single-tenant setups; a `resyncPayslipMonth` tool to retry/
 fetch one specific month without re-syncing the whole history; a
-`skipPdf` option for fast numbers-only syncs.
+`skipPdf` option for fast numbers-only syncs; a `getPersonalDetails` tool
+(live lookup, not persisted — see `PersonalDetailsApiapi.asmx` in the API
+table above); a per-tenant serial queue (`TenantService.runExclusive`) so
+concurrent tool calls against the same tenant — which reliably cause
+`page.goto` timeouts on Hilan's site — are automatically serialized
+instead of failing; and `debugCallAsmx`/`debugDownloadPdf`, ad-hoc
+exploration tools used to investigate `GetMultiplePaySlipData`'s real
+behavior (see the API table above) without writing one-off scripts each
+time.
 
 **Still open / v1.1+ (unchanged from the original plan):** personal
 details, general file archive, and Form 101 are not implemented. OTP/2FA
