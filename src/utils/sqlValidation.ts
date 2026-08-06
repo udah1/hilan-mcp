@@ -36,16 +36,6 @@ export function validateSelectQuery(sql: string): { valid: boolean; reason?: str
       return { valid: true };
     }
 
-    const tableMatches = trimmedSql.match(/from\s+([\w]+)/gi) || [];
-    const tables = tableMatches
-      .map((match: string) => match.replace(/from\s+/i, '').trim())
-      .filter(Boolean);
-
-    const disallowedTables = tables.filter((t: string) => !allowedTables.has(t));
-    if (disallowedTables.length > 0) {
-      return { valid: false, reason: `Access to table(s) not allowed: ${disallowedTables.join(', ')}` };
-    }
-
     try {
       const ast = parser.astify(trimmedSql, { database: 'SQLite' });
 
@@ -55,6 +45,20 @@ export function validateSelectQuery(sql: string): { valid: boolean; reason?: str
 
       if (ast.type !== 'select') {
         return { valid: false, reason: 'Only SELECT statements are allowed' };
+      }
+
+      // A naive regex scan of `FROM <word>` misses JOINs (`JOIN credentials
+      // ON ...` has no `FROM` before the table name), comma-joins
+      // (`FROM payslips, credentials`), quoted identifiers
+      // (`FROM "credentials"`), and subqueries. `tableList` walks the full
+      // AST (including nested subqueries/CTEs) and returns every table
+      // reference regardless of which clause it appears in, so use that as
+      // the single source of truth for the allowlist check instead.
+      const tableRefs = parser.tableList(trimmedSql, { database: 'SQLite' });
+      const referencedTables = tableRefs.map(ref => ref.split('::').pop() ?? ref);
+      const disallowedTables = referencedTables.filter(t => !allowedTables.has(t));
+      if (disallowedTables.length > 0) {
+        return { valid: false, reason: `Access to table(s) not allowed: ${disallowedTables.join(', ')}` };
       }
 
       return { valid: true };

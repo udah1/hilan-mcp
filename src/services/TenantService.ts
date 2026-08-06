@@ -14,6 +14,53 @@ function sanitizePeriodKey(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
 }
 
+/** Parses "MM_YYYY" or "MM/YYYY" into [year, month]. */
+function parsePeriod(period: string): [number, number] {
+  const normalized = period.includes('/') ? period : period.replace('_', '/');
+  const [mm, yyyy] = normalized.split('/');
+  const month = Number(mm);
+  const year = Number(yyyy);
+  if (!Number.isInteger(month) || !Number.isInteger(year) || month < 1 || month > 12) {
+    throw new HilanLoginError(`Invalid period "${period}" — expected "MM_YYYY" or "MM/YYYY"`);
+  }
+  return [year, month];
+}
+
+/** Every "MM/YYYY" month from `from` to `to` (both inclusive). */
+function monthRange(from: string, to: string): string[] {
+  const [fromYear, fromMonth] = parsePeriod(from);
+  const [toYear, toMonth] = parsePeriod(to);
+  if (fromYear > toYear || (fromYear === toYear && fromMonth > toMonth)) {
+    throw new HilanLoginError(`"from" (${from}) must be before or equal to "to" (${to})`);
+  }
+  const months: string[] = [];
+  let y = fromYear;
+  let m = fromMonth;
+  while (y < toYear || (y === toYear && m <= toMonth)) {
+    months.push(`${String(m).padStart(2, '0')}/${y}`);
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return months;
+}
+
+// Hilan's combined-PDF endpoint builds a redirect URL with one
+// "dd/mm/yyyy," entry per month (~11 chars each) plus a ~40-char fixed
+// prefix/suffix. IIS's default `requestFiltering maxQueryString` (2048
+// chars) 404s past ~182 months — verified empirically (120 months/10yr
+// downloads fine, 194 months/16yr 404s). Chunk comfortably under that.
+const MAX_MONTHS_PER_COMBINED_PDF = 150;
+
+export interface CombinedPayslipsPdfChunk {
+  fromMonth: string;
+  toMonth: string;
+  monthCount: number;
+  path: string;
+}
+
 export interface PayslipSyncResult {
   periodLabel: string | null;
   bruto: number | null;
@@ -209,6 +256,75 @@ export class TenantService {
     for (const dateOption of dateOptions) {
       results.push(await this.processPayslipMonth(subdomain, context, employeeId, dateOption, { skipPdf }));
     }
+    return results;
+  }
+
+  /**
+   * Downloads one PDF covering *all* payslips in `[fromMonth, toMonth]`
+   * (inclusive, "MM_YYYY" or "MM/YYYY"), instead of one file per month.
+   * Automatically splits into multiple files if the range is long enough
+   * that a single request would hit Hilan's combined-PDF URL-length limit
+   * (see `MAX_MONTHS_PER_COMBINED_PDF`) — most ranges up to ~12 years
+   * produce just one file.
+   */
+  public downloadCombinedPayslipsPdf(
+    subdomain: string,
+    fromMonth: string,
+    toMonth: string
+  ): Promise<CombinedPayslipsPdfChunk[]> {
+    return this.runExclusive(subdomain, () => this.downloadCombinedPayslipsPdfImpl(subdomain, fromMonth, toMonth));
+  }
+
+  private async downloadCombinedPayslipsPdfImpl(
+    subdomain: string,
+    fromMonth: string,
+    toMonth: string
+  ): Promise<CombinedPayslipsPdfChunk[]> {
+    const allMonths = monthRange(fromMonth, toMonth);
+    if (allMonths.length === 0) {
+      throw new HilanLoginError('The requested range contains no months.');
+    }
+
+    const context = await this.ensureLoggedIn(subdomain);
+    const tenant = await this.db.getTenant(subdomain);
+    let employeeId = tenant?.employee_id ?? null;
+    if (employeeId === null) {
+      const initial = await this.bootstrap(subdomain, context);
+      employeeId = initial.SelectedEmployee?.EmployeeId ?? null;
+    }
+
+    const chunks: string[][] = [];
+    for (let i = 0; i < allMonths.length; i += MAX_MONTHS_PER_COMBINED_PDF) {
+      chunks.push(allMonths.slice(i, i + MAX_MONTHS_PER_COMBINED_PDF));
+    }
+
+    const results: CombinedPayslipsPdfChunk[] = [];
+    for (const chunkMonths of chunks) {
+      const resp = await HilanClient.callAsmx<{ Url?: string }>(
+        subdomain,
+        context,
+        'PaySlipApiapi.asmx/GetMultiplePaySlipData',
+        { EmployeeId: employeeId, SelectedMonths: chunkMonths, Language: 'he-IL', PaySlipType: 0, IsShowPdfHelpLayer: false }
+      );
+      if (!resp.Url) {
+        throw new HilanLoginError(
+          `Hilan didn't return a PDF URL for months ${chunkMonths[0]}..${chunkMonths[chunkMonths.length - 1]}`
+        );
+      }
+
+      const first = chunkMonths[0].replace('/', '-');
+      const last = chunkMonths[chunkMonths.length - 1].replace('/', '-');
+      const fileName = `payslips-combined-${first}_to_${last}.pdf`;
+      const path = await HilanClient.downloadPdf(subdomain, context, resp.Url, this.tenantPdfDir(subdomain), fileName);
+
+      results.push({
+        fromMonth: chunkMonths[0],
+        toMonth: chunkMonths[chunkMonths.length - 1],
+        monthCount: chunkMonths.length,
+        path,
+      });
+    }
+
     return results;
   }
 

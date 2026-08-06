@@ -1,7 +1,26 @@
 import { chromium, type Browser, type BrowserContext, type APIResponse } from 'playwright';
 import { writeFileSync, chmodSync } from 'fs';
-import { join } from 'path';
+import { join, basename, resolve } from 'path';
 import type { LoginFieldValues } from '../types.js';
+
+/**
+ * Resolves `fileName` against `destDir`, refusing to write anywhere outside
+ * it. `fileName` is developer-controlled for the normal sync/resync tools,
+ * but the `debugDownloadPdf` MCP tool passes it through from an AI agent, so
+ * a `../../../.ssh/authorized_keys`-style value must never escape `destDir`.
+ */
+export function safeDestPath(destDir: string, fileName: string): string {
+  const safeName = basename(fileName);
+  if (!safeName || safeName === '.' || safeName === '..') {
+    throw new HilanLoginError(`Invalid file name: ${fileName}`);
+  }
+  const resolvedDir = resolve(destDir);
+  const resolvedPath = resolve(resolvedDir, safeName);
+  if (resolvedPath !== resolvedDir && !resolvedPath.startsWith(resolvedDir + '/')) {
+    throw new HilanLoginError(`Refusing to write outside the destination directory: ${fileName}`);
+  }
+  return resolvedPath;
+}
 
 export class HilanUnsupportedError extends Error {
   constructor(message: string) {
@@ -343,10 +362,21 @@ export class HilanClient {
     // Relative PDF URLs returned by the JSON API (e.g. `PaySlipData.Url`)
     // are relative to the app's `/Hilannetv2` virtual directory, not the
     // domain root — confirmed against a real browser network capture
-    // (`.../Hilannetv2/PersonalFile/PdfPaySlip.aspx/...`).
-    const absoluteUrl = url.startsWith('http')
-      ? url
-      : `${baseUrl}/Hilannetv2/${url.replace(/^\/+/, '')}`;
+    // (`.../Hilannetv2/PersonalFile/PdfPaySlip.aspx/...`). Absolute URLs are
+    // only accepted if they're same-origin with the tenant itself — this is
+    // an authenticated fetch that sends the tenant's session cookies
+    // (`credentials: 'include'`), so letting a caller (e.g. the debug tools,
+    // whose URL can come from an AI agent) redirect it to an arbitrary
+    // domain would be an SSRF/cookie-leak vector.
+    let absoluteUrl: string;
+    if (url.startsWith('http')) {
+      if (!url.startsWith(`${baseUrl}/`)) {
+        throw new HilanLoginError(`Refusing to fetch a PDF URL outside the tenant's own origin: ${url}`);
+      }
+      absoluteUrl = url;
+    } else {
+      absoluteUrl = `${baseUrl}/Hilannetv2/${url.replace(/^\/+/, '')}`;
+    }
 
     // The Amdocs network's corporate TLS-intercepting proxy occasionally
     // truncates a response mid-stream (observed: exact 32768-byte cutoffs,
@@ -399,7 +429,7 @@ export class HilanClient {
         continue;
       }
 
-      const destPath = join(destDir, fileName);
+      const destPath = safeDestPath(destDir, fileName);
       writeFileSync(destPath, buffer);
       chmodSync(destPath, 0o600);
       return destPath;

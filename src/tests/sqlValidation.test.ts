@@ -53,4 +53,43 @@ describe('validateSelectQuery', () => {
     const result = validateSelectQuery('PRAGMA table_info(credentials)');
     expect(result.valid).toBe(false);
   });
+
+  // A naive `FROM <word>` regex misses all of these — they only ever
+  // mention the disallowed table via JOIN, a comma-join, a quoted
+  // identifier, or a subquery, never immediately after `FROM <bareword>`.
+  it('blocks a JOIN against credentials', () => {
+    const result = validateSelectQuery(
+      'SELECT p.period, c.fields FROM payslips p JOIN credentials c ON p.tenant_subdomain = c.tenant_subdomain'
+    );
+    expect(result.valid).toBe(false);
+  });
+
+  it('blocks a JOIN against sessions', () => {
+    const result = validateSelectQuery(
+      'SELECT p.period, s.storage_state FROM payslips p JOIN sessions s ON p.tenant_subdomain = s.tenant_subdomain'
+    );
+    expect(result.valid).toBe(false);
+  });
+
+  it('blocks a comma-join against credentials', () => {
+    const result = validateSelectQuery('SELECT * FROM payslips, credentials');
+    expect(result.valid).toBe(false);
+  });
+
+  it('blocks a double-quoted table identifier', () => {
+    const result = validateSelectQuery('SELECT * FROM "credentials"');
+    expect(result.valid).toBe(false);
+  });
+
+  it('blocks a disallowed table referenced only inside a subquery', () => {
+    const result = validateSelectQuery(
+      'SELECT * FROM payslips WHERE tenant_subdomain IN (SELECT tenant_subdomain FROM sessions)'
+    );
+    expect(result.valid).toBe(false);
+  });
+
+  it('blocks a disallowed table referenced only inside a FROM-subquery', () => {
+    const result = validateSelectQuery('SELECT * FROM (SELECT * FROM credentials) x');
+    expect(result.valid).toBe(false);
+  });
 });

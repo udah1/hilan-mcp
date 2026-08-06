@@ -7,9 +7,16 @@ import { encryptionKeyService } from '../services/EncryptionKeyService.js';
 import { HilanClient } from '../services/HilanClient.js';
 import { TenantService } from '../services/TenantService.js';
 import { getDefaultTenantInput } from '../utils/env.js';
+import { redactError } from '../utils/redact.js';
 import '../utils/consoleRedirect.js';
 import { configureLogger } from '../utils/logger.js';
 configureLogger({ enableConsoleOutput: true });
+
+// This server communicates over stdio — an interactive stdin key prompt
+// would corrupt the MCP JSON-RPC framing (and can hang the connection
+// entirely). See EncryptionKeyService.disableStdinFallback for the
+// resulting (clear, actionable) error instead.
+encryptionKeyService.disableStdinFallback();
 
 interface TextContent {
   type: 'text';
@@ -42,7 +49,7 @@ class Server {
 
   private setupErrorHandling() {
     this.server.server.onerror = (error: Error) => {
-      console.error('[Error] MCP Server error:', error);
+      console.error('[Error] MCP Server error:', redactError(error));
     };
 
     process.on('SIGINT', async () => {
@@ -63,9 +70,10 @@ class Server {
       try {
         const result = await handler(params);
         return this.textResponse(JSON.stringify(result));
-      } catch (error: any) {
-        console.error(`Error in ${name}:`, error);
-        throw new McpError(ErrorCode.InternalError, error.message || `Error in ${name}`);
+      } catch (error: unknown) {
+        const safeMessage = redactError(error) || `Error in ${name}`;
+        console.error(`Error in ${name}:`, safeMessage);
+        throw new McpError(ErrorCode.InternalError, safeMessage);
       }
     });
   }
@@ -153,6 +161,33 @@ class Server {
     );
 
     this.registerTool(
+      'downloadCombinedPayslipsPdf',
+      async params => {
+        const { tenant, fromMonth, toMonth } = params as { tenant?: string; fromMonth: string; toMonth: string };
+        if (!fromMonth || !toMonth) throw new Error('fromMonth and toMonth are required');
+        return this.withDb(async () => {
+          const resolvedTenant = await this.resolveTenant(tenant);
+          const chunks = await this.tenantService.downloadCombinedPayslipsPdf(resolvedTenant, fromMonth, toMonth);
+          return { success: true, data: { tenant: resolvedTenant, files: chunks } };
+        });
+      },
+      {
+        description:
+          'Downloads ONE PDF covering every payslip in a date range (instead of one file per month) — handy for printing/sharing a multi-year span at once. Automatically splits into multiple files for very long ranges (Hilan\'s combined-PDF endpoint has a practical ceiling of roughly 12-15 years per file due to a URL-length limit on their end).',
+        inputSchema: {
+          tenant: z
+            .string()
+            .optional()
+            .describe(
+              'Tenant subdomain, e.g. "amdocs". Optional if this server has COMPANY_URL / COMPANY_TENANT / COMPANY_CODE set in its env'
+            ),
+          fromMonth: z.string().describe('Start of the range (inclusive), "MM_YYYY" or "MM/YYYY", e.g. "01/2020"'),
+          toMonth: z.string().describe('End of the range (inclusive), "MM_YYYY" or "MM/YYYY", e.g. "12/2025"'),
+        },
+      }
+    );
+
+    this.registerTool(
       'getPersonalDetails',
       async params => {
         const { tenant } = params as { tenant?: string };
@@ -176,48 +211,58 @@ class Server {
       }
     );
 
-    this.registerTool(
-      'debugCallAsmx',
-      async params => {
-        const { tenant, servicePath, body } = params as { tenant?: string; servicePath: string; body?: Record<string, unknown> };
-        if (!servicePath) throw new Error('servicePath is required');
-        return this.withDb(async () => {
-          const resolvedTenant = await this.resolveTenant(tenant);
-          const result = await this.tenantService.debugCallAsmx(resolvedTenant, servicePath, body ?? {});
-          return { success: true, data: result };
-        });
-      },
-      {
-        description:
-          'DEBUG/exploration only: raw pass-through to any PaySlipApiapi/Form106Apiapi .asmx endpoint on a logged-in session, for testing API behavior. Not for regular use.',
-        inputSchema: {
-          tenant: z.string().optional(),
-          servicePath: z.string().describe('e.g. "PaySlipApiapi.asmx/GetMultiplePaySlipData"'),
-          body: z.record(z.unknown()).optional().describe('JSON body to POST'),
+    // debugCallAsmx / debugDownloadPdf are an intentional escape hatch used
+    // during development to explore Hilan's `.asmx` API surface directly —
+    // debugCallAsmx can POST to any endpoint under the tenant's live
+    // session (Hilan generally gates writes behind approval flows, but this
+    // hasn't been audited), and debugDownloadPdf fetches an arbitrary
+    // same-origin URL. Neither is needed for normal use, so both are
+    // disabled unless explicitly opted into — never on by default for
+    // strangers installing this from npm.
+    if (process.env.HILAN_ENABLE_DEBUG_TOOLS === '1') {
+      this.registerTool(
+        'debugCallAsmx',
+        async params => {
+          const { tenant, servicePath, body } = params as { tenant?: string; servicePath: string; body?: Record<string, unknown> };
+          if (!servicePath) throw new Error('servicePath is required');
+          return this.withDb(async () => {
+            const resolvedTenant = await this.resolveTenant(tenant);
+            const result = await this.tenantService.debugCallAsmx(resolvedTenant, servicePath, body ?? {});
+            return { success: true, data: result };
+          });
         },
-      }
-    );
+        {
+          description:
+            'DEBUG/exploration only: raw pass-through to any PaySlipApiapi/Form106Apiapi .asmx endpoint on a logged-in session, for testing API behavior. Not for regular use.',
+          inputSchema: {
+            tenant: z.string().optional(),
+            servicePath: z.string().describe('e.g. "PaySlipApiapi.asmx/GetMultiplePaySlipData"'),
+            body: z.record(z.unknown()).optional().describe('JSON body to POST'),
+          },
+        }
+      );
 
-    this.registerTool(
-      'debugDownloadPdf',
-      async params => {
-        const { tenant, relativeUrl, fileName } = params as { tenant?: string; relativeUrl: string; fileName: string };
-        if (!relativeUrl || !fileName) throw new Error('relativeUrl and fileName are required');
-        return this.withDb(async () => {
-          const resolvedTenant = await this.resolveTenant(tenant);
-          const path = await this.tenantService.debugDownloadPdf(resolvedTenant, relativeUrl, fileName);
-          return { success: true, data: { path } };
-        });
-      },
-      {
-        description: 'DEBUG/exploration only: download an arbitrary relative PDF URL (e.g. one returned by debugCallAsmx) to inspect it. Not for regular use.',
-        inputSchema: {
-          tenant: z.string().optional(),
-          relativeUrl: z.string(),
-          fileName: z.string(),
+      this.registerTool(
+        'debugDownloadPdf',
+        async params => {
+          const { tenant, relativeUrl, fileName } = params as { tenant?: string; relativeUrl: string; fileName: string };
+          if (!relativeUrl || !fileName) throw new Error('relativeUrl and fileName are required');
+          return this.withDb(async () => {
+            const resolvedTenant = await this.resolveTenant(tenant);
+            const path = await this.tenantService.debugDownloadPdf(resolvedTenant, relativeUrl, fileName);
+            return { success: true, data: { path } };
+          });
         },
-      }
-    );
+        {
+          description: 'DEBUG/exploration only: download an arbitrary relative PDF URL (e.g. one returned by debugCallAsmx) to inspect it. Not for regular use.',
+          inputSchema: {
+            tenant: z.string().optional(),
+            relativeUrl: z.string(),
+            fileName: z.string(),
+          },
+        }
+      );
+    }
 
     this.registerTool(
       'resyncPayslipMonth',
@@ -330,7 +375,7 @@ class Server {
       await this.server.connect(new StdioServerTransport());
       console.error('hilan-mcp server started successfully');
     } catch (error) {
-      console.error('Failed to start hilan-mcp server:', error);
+      console.error('Failed to start hilan-mcp server:', redactError(error));
       throw error;
     }
   }
@@ -342,19 +387,20 @@ class Server {
 
 const isMain = process.argv[1] && process.argv[1] === new URL(import.meta.url).pathname;
 
-async function main() {
+/** Exported so the `hilan-mcp` CLI's default command can start the server without re-executing this module as a script. */
+export async function main() {
   try {
     const server = new Server();
     await server.start();
   } catch (error) {
-    console.error('Failed to start hilan-mcp server:', error);
+    console.error('Failed to start hilan-mcp server:', redactError(error));
     process.exit(1);
   }
 }
 
 if (isMain) {
   main().catch(error => {
-    console.error('Unhandled error in hilan-mcp server:', error);
+    console.error('Unhandled error in hilan-mcp server:', redactError(error));
     process.exit(1);
   });
 }

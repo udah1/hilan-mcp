@@ -6,19 +6,23 @@
   "bin": {
     "hilan-mcp": "./dist/cli/index.js"
   },
-  "exports": {
-    ".": "./dist/index.js"
-  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start:mcp": "tsx src/mcp/Server.ts",
     "build": "tsc",
     "build:watch": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "cli": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts",
+    "setup": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts setup",
     "ingest-creds": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts ingest-creds",
     "setup-key": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts setup-key",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "keywords": [
     "mcp",
@@ -28,7 +32,15 @@
     "form106",
     "israel"
   ],
-  "author": "",
+  "author": "udah1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/udah1/hilan-mcp.git"
+  },
+  "homepage": "https://github.com/udah1/hilan-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/udah1/hilan-mcp/issues"
+  },
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
@@ -39,13 +51,13 @@
     "node-notifier": "^10.0.1",
     "node-sql-parser": "^5.3.9",
     "playwright": "^1.62.1",
-    "tsx": "^4.19.4",
     "zod": "^3.25.28"
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.8",
     "@types/node": "^20.11.28",
     "@types/node-notifier": "^8.0.5",
+    "tsx": "^4.19.4",
     "typescript": "^5.3.3",
     "vitest": "^1.6.1"
   },

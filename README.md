@@ -26,23 +26,23 @@ credentials, rather than hardcoded to one company.
 
 ## Setup
 
-```bash
-npm install
-npx playwright install chromium   # one-time browser download
-```
-
 ### 1. Register a tenant and enter credentials
 
 Run this **yourself**, directly in your own terminal — never paste real
-credentials into an AI chat. This will launch a headless browser, detect
-your tenant's actual login fields, and prompt you for each one (passwords
-are masked):
+credentials into an AI chat. It installs the Chromium browser Playwright
+needs (one-time), launches a headless browser, detects your tenant's actual
+login fields, and prompts you for each one (passwords are masked). No local
+clone or `npm install` needed — `npx` fetches the package on the fly:
 
 ```bash
-npm run ingest-creds -- --tenant amdocs        # tenant subdomain
+npx hilan-mcp setup --tenant amdocs        # tenant subdomain
 # or
-npm run ingest-creds -- --tenant 5227          # numeric org code, resolved automatically
+npx hilan-mcp setup --tenant 5227          # numeric org code, resolved automatically
 ```
+
+(If you already have the package installed some other way, the equivalent
+lower-level command is `npx hilan-mcp ingest-creds --tenant <...>` — `setup`
+just also handles the one-time Chromium install first.)
 
 The first time you run this you'll be asked to set an **encryption key**
 for the local database (min 6 characters) — this key is never written to
@@ -52,8 +52,8 @@ For the MCP server to open the database on its own (without a human
 present to respond to a prompt every time), it looks for the key in this
 order:
 
-1. **OS credential store** (recommended) — run `npm run setup-key` once,
-   yourself, in your own terminal. You'll be asked to type a key (or press
+1. **OS credential store** (recommended) — run `npx hilan-mcp setup-key`
+   once, yourself, in your own terminal. You'll be asked to type a key (or press
    Enter to generate a strong random one), and it's stored in your OS's
    native secure storage: **macOS Keychain** (verified — same file that
    holds your Wi-Fi/browser passwords, silent, no dialogs), **Windows**
@@ -71,12 +71,15 @@ order:
 
 ### 2. Add the server to your MCP client config
 
+Running the package with **no arguments** starts the MCP server itself
+(stdio transport) — that's what your MCP client's config actually invokes:
+
 ```json
 {
   "mcpServers": {
     "hilan": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/hilan-mcp/src/mcp/Server.ts"]
+      "args": ["-y", "hilan-mcp"]
     }
   }
 }
@@ -92,7 +95,7 @@ order — `COMPANY_URL` → `COMPANY_TENANT` → `COMPANY_CODE`:
   "mcpServers": {
     "hilan": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/hilan-mcp/src/mcp/Server.ts"],
+      "args": ["-y", "hilan-mcp"],
       "env": {
         "COMPANY_TENANT": "amdocs",
         "HILAN_DB_KEY": "the-encryption-key-you-set-during-ingest-creds",
@@ -103,10 +106,15 @@ order — `COMPANY_URL` → `COMPANY_TENANT` → `COMPANY_CODE`:
 }
 ```
 
-`HILAN_DB_KEY` is only needed if you didn't run `npm run setup-key` (see
-step 1) — the OS credential store takes priority when both are present.
+`HILAN_DB_KEY` is only needed if you didn't run `npx hilan-mcp setup-key`
+(see step 1) — the OS credential store takes priority when both are present.
 `NODE_EXTRA_CA_CERTS` is only needed on networks with a TLS-intercepting
 corporate proxy (see Reliability notes below) — omit it otherwise.
+
+> **Running from a local clone instead of the published package?** Use
+> `"command": "node", "args": ["/absolute/path/to/hilan-mcp/dist/cli/index.js"]`
+> (after `npm install && npm run build` in that clone) instead of the `npx`
+> form above.
 
 | Env var | Example | Notes |
 |---|---|---|
@@ -114,15 +122,37 @@ corporate proxy (see Reliability notes below) — omit it otherwise.
 | `COMPANY_TENANT` | `amdocs` | Bare subdomain. Used only if `COMPANY_URL` isn't set. |
 | `COMPANY_CODE` | `5227` | Numeric org code. Used only if neither above is set — requires an extra lookup round-trip against `net.hilan.co.il`. |
 
-This same fallback also applies to `npm run ingest-creds` — `--tenant` is
-optional if one of these env vars is set. An explicit `tenant` argument (or
-`--tenant` flag) always overrides the env vars.
+This same fallback also applies to `npx hilan-mcp ingest-creds` —
+`--tenant` is optional if one of these env vars is set. An explicit
+`tenant` argument (or `--tenant` flag) always overrides the env vars.
 
 ### 3. Use it
 
-Ask your assistant things like "sync my last 3 payslips from Hilan" or
-"download my Form 106 for 2025" — it will call the `syncPayslips` /
-`syncForm106` tools below.
+Ask your assistant things like "sync my last 3 payslips from Hilan",
+"download my Form 106 for 2025", or "how much net/gross did I earn in June
+2026?" (answered instantly from the local database via the `query` tool,
+no network round-trip, once that month has been synced at least once) — see
+the full tool list below.
+
+## For AI agents (Claude, etc.) setting this up on a user's behalf
+
+If a user asks you to set up `hilan-mcp` for them:
+
+1. **You must not** run `ingest-creds`/`setup`/`setup-key` yourself via a
+   shell tool — they prompt for a password and/or an encryption key
+   interactively, and your shell tool's transcript could capture what the
+   user types. Tell the user to open their **own** terminal and run
+   `npx hilan-mcp setup --tenant <their-org-code-or-subdomain>` themselves,
+   then (recommended) `npx hilan-mcp setup-key`.
+2. Once that's done, **you** can safely add the MCP server entry to the
+   client's config file (the JSON blocks in step 2 above) — that part has
+   no secrets in it as long as the user used `setup-key` (OS credential
+   store) rather than the `HILAN_DB_KEY` env var fallback.
+3. After the config is added, the user (or their client) needs to reload/
+   restart the MCP connection for the new tools to appear.
+4. Don't enable `HILAN_ENABLE_DEBUG_TOOLS` unless the user explicitly asks
+   for the raw `.asmx`/PDF exploration tools — they're an intentional
+   escape hatch (see Security model below), not needed for normal use.
 
 ## MCP tools
 
@@ -132,12 +162,13 @@ Ask your assistant things like "sync my last 3 payslips from Hilan" or
 | `syncPayslips(tenant?, monthsBack?, skipPdf?)` | Logs in (reusing a saved session if it still works), fetches structured Bruto/Neto/salary-parts data for the last N months (default 3), and downloads each payslip PDF. Set `skipPdf: true` for a much faster numbers-only sync (e.g. "what did I earn this year"). `tenant` is optional if `COMPANY_URL`/`COMPANY_TENANT`/`COMPANY_CODE` is set (see above). The tenant's own archive length caps how far back this can actually go — no need to guess a start date. |
 | `resyncPayslipMonth(tenant?, period, skipPdf?)` | Re-fetches **one specific month** (e.g. `"10_2019"` or `"10/2019"`), overwriting whatever's stored. Use this instead of re-running `syncPayslips` over the whole history just to retry one bad/truncated PDF or to answer a one-off "how much did I make in month X" question. |
 | `syncForm106(tenant?, year?)` | Logs in and downloads the Form 106 PDF for a given year (or the tenant's default year). Same `tenant` fallback as above. |
+| `downloadCombinedPayslipsPdf(tenant?, fromMonth, toMonth, destDir?)` | Downloads **one PDF covering a whole month range** (e.g. all of 2015–2024) instead of one file per month. Automatically splits into multiple files if the range would otherwise exceed the server's URL length limit (see Reliability notes) — practical ceiling is roughly 10–15 years per chunk. |
 | `listTables` | Lists queryable tables (`payslips`, `form106` only). |
 | `describeTable(table)` | Columns + indexes for `payslips` or `form106`. |
 | `query(sql)` | SELECT-only SQL against `payslips`/`form106`. **`credentials`, `sessions`, and `tenants` are hard-blocked** — see Security below. Good for quick questions like "how much net/gross did I earn in June 2026" without touching the network at all. |
 | `getPersonalDetails(tenant?)` | Logs in and returns personal details (name, national ID, birthdate, address, phone, email, work start date, job type). Live lookup only — **not persisted** to the local database. |
-| `debugCallAsmx(tenant?, servicePath, body?)` | **Debug/exploration only** — raw pass-through to any `.asmx` endpoint on a logged-in session, for probing API behavior. Not meant for regular use. |
-| `debugDownloadPdf(tenant?, relativeUrl, fileName)` | **Debug/exploration only** — download an arbitrary relative PDF URL (e.g. one returned by `debugCallAsmx`) to inspect it. Not meant for regular use. |
+| `debugCallAsmx(tenant?, servicePath, body?)` | **Debug/exploration only, disabled by default** — raw pass-through to any `.asmx` endpoint on a logged-in session, for probing API behavior. Requires `HILAN_ENABLE_DEBUG_TOOLS=1` in the server's `env` block; not registered otherwise. |
+| `debugDownloadPdf(tenant?, relativeUrl, fileName)` | **Debug/exploration only, disabled by default** — download an arbitrary relative PDF URL (e.g. one returned by `debugCallAsmx`) to inspect it. Same `HILAN_ENABLE_DEBUG_TOOLS=1` gate. Filenames are sanitized (no path traversal) and URLs are restricted to the tenant's own origin (no SSRF). |
 
 **Concurrency note**: every tool call for a given tenant is automatically
 queued and run one-at-a-time internally (see `TenantService.runExclusive`)
@@ -224,13 +255,28 @@ work and still save a PDF, just without the parsed Bruto/Neto numbers.
 
 ## Development
 
+Clone this repo to work on the code itself (not needed just to *use* the
+server — see Setup above for that):
+
 ```bash
+npm install
 npm run typecheck
-npm test                 # SQL-allowlist unit tests
-npm run start:mcp        # run the server directly (stdio transport)
+npm test                 # unit tests (SQL allowlist, path-traversal, redaction)
+npm run build            # compile TypeScript -> dist/
+npm run start:mcp        # run the server directly from source (stdio transport)
+npm run setup            # local equivalent of `npx hilan-mcp setup`
 npm run ingest-creds     # register a tenant + credentials (interactive, run yourself)
 npm run setup-key        # store the DB encryption key in your OS credential store (interactive, run yourself)
 ```
+
+### Publishing
+
+`npm publish` ships only `dist/`, `README.md`, and `LICENSE` (see the
+`files` field in `package.json`) — source, tests, and local research
+artifacts are excluded. `prepublishOnly` runs typecheck + tests + build
+first, so a broken build can't be published. The published `bin` entry
+(`dist/cli/index.js`) is what `npx hilan-mcp` and `npx hilan-mcp <subcommand>`
+both invoke.
 
 ## License
 
