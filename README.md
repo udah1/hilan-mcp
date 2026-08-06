@@ -49,14 +49,25 @@ for the local database (min 6 characters) — this key is never written to
 disk in plaintext.
 
 For the MCP server to open the database on its own (without a human
-present to respond to a prompt every time), set that same key as
-`HILAN_DB_KEY` in the server's `env` block (see step 2) — same trust model
-as any other API key/secret configured for an MCP server in `mcp.json`
-(local file, not committed to git). If `HILAN_DB_KEY` isn't set, the server
-falls back to asking via a desktop notification (with a plain terminal
-prompt as a last resort) — but that requires a human to respond within
-~30s of every tool call that needs the database, so it's not recommended
-for normal use.
+present to respond to a prompt every time), it looks for the key in this
+order:
+
+1. **OS credential store** (recommended) — run `npm run setup-key` once,
+   yourself, in your own terminal. You'll be asked to type a key (or press
+   Enter to generate a strong random one), and it's stored in your OS's
+   native secure storage: **macOS Keychain** (verified — same file that
+   holds your Wi-Fi/browser passwords, silent, no dialogs), **Windows**
+   (DPAPI, tied to your Windows user account), or **Linux** (Secret
+   Service / `secret-tool`, needs a keyring daemon like GNOME Keyring or
+   KWallet). Nothing ends up in any config file at all.
+2. **`HILAN_DB_KEY` env var** — set it in the server's `env` block (see
+   step 2). Same trust model as any other API key/secret configured for an
+   MCP server in `mcp.json` (local file, not committed to git).
+3. **Desktop notification** (last resort) — the server falls back to
+   asking via a system notification (with a plain terminal prompt as a
+   further fallback), but that requires a human to respond within ~30s of
+   every tool call that needs the database, so it's not recommended for
+   normal use.
 
 ### 2. Add the server to your MCP client config
 
@@ -84,12 +95,18 @@ order — `COMPANY_URL` → `COMPANY_TENANT` → `COMPANY_CODE`:
       "args": ["tsx", "/absolute/path/to/hilan-mcp/src/mcp/Server.ts"],
       "env": {
         "COMPANY_TENANT": "amdocs",
-        "HILAN_DB_KEY": "the-encryption-key-you-set-during-ingest-creds"
+        "HILAN_DB_KEY": "the-encryption-key-you-set-during-ingest-creds",
+        "NODE_EXTRA_CA_CERTS": "/path/to/your-corporate-ca-bundle.pem"
       }
     }
   }
 }
 ```
+
+`HILAN_DB_KEY` is only needed if you didn't run `npm run setup-key` (see
+step 1) — the OS credential store takes priority when both are present.
+`NODE_EXTRA_CA_CERTS` is only needed on networks with a TLS-intercepting
+corporate proxy (see Reliability notes below) — omit it otherwise.
 
 | Env var | Example | Notes |
 |---|---|---|
@@ -112,11 +129,19 @@ Ask your assistant things like "sync my last 3 payslips from Hilan" or
 | Tool | Description |
 |---|---|
 | `listTenants` | Configured tenants (subdomain, capability, whether login has succeeded before) — no secrets. |
-| `syncPayslips(tenant?, monthsBack?)` | Logs in (reusing a saved session if it still works), fetches structured Bruto/Neto/salary-parts data for the last N months (default 3), and downloads each payslip PDF. `tenant` is optional if `COMPANY_URL`/`COMPANY_TENANT`/`COMPANY_CODE` is set (see above). |
+| `syncPayslips(tenant?, monthsBack?, skipPdf?)` | Logs in (reusing a saved session if it still works), fetches structured Bruto/Neto/salary-parts data for the last N months (default 3), and downloads each payslip PDF. Set `skipPdf: true` for a much faster numbers-only sync (e.g. "what did I earn this year"). `tenant` is optional if `COMPANY_URL`/`COMPANY_TENANT`/`COMPANY_CODE` is set (see above). The tenant's own archive length caps how far back this can actually go — no need to guess a start date. |
+| `resyncPayslipMonth(tenant?, period, skipPdf?)` | Re-fetches **one specific month** (e.g. `"10_2019"` or `"10/2019"`), overwriting whatever's stored. Use this instead of re-running `syncPayslips` over the whole history just to retry one bad/truncated PDF or to answer a one-off "how much did I make in month X" question. |
 | `syncForm106(tenant?, year?)` | Logs in and downloads the Form 106 PDF for a given year (or the tenant's default year). Same `tenant` fallback as above. |
 | `listTables` | Lists queryable tables (`payslips`, `form106` only). |
 | `describeTable(table)` | Columns + indexes for `payslips` or `form106`. |
-| `query(sql)` | SELECT-only SQL against `payslips`/`form106`. **`credentials`, `sessions`, and `tenants` are hard-blocked** — see Security below. |
+| `query(sql)` | SELECT-only SQL against `payslips`/`form106`. **`credentials`, `sessions`, and `tenants` are hard-blocked** — see Security below. Good for quick questions like "how much net/gross did I earn in June 2026" without touching the network at all. |
+| `debugCallAsmx(tenant?, servicePath, body?)` | **Debug/exploration only** — raw pass-through to any `PaySlipApiapi`/`Form106Apiapi` `.asmx` endpoint on a logged-in session, for probing API behavior (e.g. whether an endpoint's UI limit is actually enforced server-side). Not meant for regular use. |
+
+**Concurrency note**: don't call multiple tools against the *same tenant*
+in parallel — Hilan's site (and/or the network path to it) doesn't handle
+concurrent requests from one session well and everything will time out.
+Tool calls for the same tenant must be sequential; different tenants are
+independent.
 
 ## Scope (v1)
 
@@ -129,6 +154,31 @@ Ask your assistant things like "sync my last 3 payslips from Hilan" or
 Tenants whose internal API response doesn't match the structured shape seen
 on the reference tenant (Amdocs) are marked `pdf_only`: payslip syncs still
 work and still save a PDF, just without the parsed Bruto/Neto numbers.
+
+### Reliability notes (learned from a real end-to-end run)
+
+- **Corporate TLS-intercepting proxies** (e.g. Amdocs's network) break
+  Playwright's Node-side `context.request` for the internal API/PDF calls
+  with `self-signed certificate in certificate chain`. Set
+  `NODE_EXTRA_CA_CERTS` to your organization's exported CA bundle in the
+  server's `env` block if you hit this.
+- **Direct PDF download URLs are relative to `/Hilannetv2`**, not the
+  domain root — a URL returned by the JSON API like
+  `PersonalFile/PdfPaySlip.aspx/...` actually lives at
+  `<tenant>/Hilannetv2/PersonalFile/PdfPaySlip.aspx/...`. Confirmed via a
+  live browser network capture.
+- PDF downloads go through an **in-page `fetch()`** (same-origin, raw URL)
+  rather than `context.request`, which silently re-encodes literal `/` in
+  query strings to `%2F` and gets 404'd by some endpoints.
+- The same corporate proxy occasionally **truncates a PDF response
+  mid-stream** (observed: suspiciously round 32768-byte cutoffs) without
+  the fetch itself erroring. `downloadPdf` checks for the standard `%%EOF`
+  PDF trailer and retries up to 3 times before giving up.
+- A tenant's *regular* login page can unconditionally show a "log in with
+  a one-time code" button/link even when normal username+password login
+  is fully supported and working — don't treat that text alone as proof
+  OTP is required. Only genuinely new OTP-input fields (or navigating to
+  an OTP-specific route) after a failed login count as OTP being required.
 
 ## Security model
 
@@ -153,6 +203,8 @@ work and still save a PDF, just without the parsed Bruto/Neto numbers.
 npm run typecheck
 npm test                 # SQL-allowlist unit tests
 npm run start:mcp        # run the server directly (stdio transport)
+npm run ingest-creds     # register a tenant + credentials (interactive, run yourself)
+npm run setup-key        # store the DB encryption key in your OS credential store (interactive, run yourself)
 ```
 
 ## License

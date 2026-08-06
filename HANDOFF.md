@@ -101,12 +101,12 @@ before anything touched disk** — see `api-shapes-key.json` for the field
 |---|---|
 | `PaySlipApiapi.asmx/GetInitialData` | List of available payslip periods + structured salary summary (`Bruto`, `Neto`, named `SalaryParts[]`) for the default period + a PDF URL. **Also the source of `SelectedEmployee.EmployeeId`**, needed for later calls. |
 | `PaySlipApiapi.asmx/GetPaySlipDataForMonth` | Same structured summary for a specific month. Request body: `{ EmployeeId, Months: [...], PaySlipType }`. |
-| `PaySlipApiapi.asmx/GetMultiplePaySlipData` | Returns one combined PDF URL for a list of months. |
+| `PaySlipApiapi.asmx/GetMultiplePaySlipData` | Takes `{EmployeeId, SelectedMonths: string[]}`; returns **only** `{Url}` — one combined PDF covering the whole range, no per-month structured data. The UI limits its month picker to 12, but the backend itself does **not** enforce that (verified with 24 months in a real request). Not useful for bulk-fetching Bruto/Neto (use per-month `GetPaySlipDataForMonth` for that), but could be used to generate one combined "all payslips" PDF if ever wanted. |
 | `Form106Apiapi.asmx/GetInitialData` / `EmployeeChanged` | Available tax years + a PDF URL for Form 106. |
 | `PersonalDetailsApiapi.asmx/GetInitialData` | Full personal details (address/phone/email/marital status/spouse/children; bank fields present but empty for this user) — **v1.1, not in v1 scope**. |
 | `Form101Apiapi.asmx/GetInitialData` | Annual tax-coordination wizard — mostly UI form-definition metadata, complex — **removed from scope entirely**, not worth building against. |
 | `HFilesManagementApiapi.asmx/GetInitialData` + `GetData` | General document archive (HR-shared files) — **v1.1, not in v1 scope**. |
-| Direct PDF endpoints (no `.asmx`, still need the session cookie) | `PersonalFile/PdfPaySlip.aspx/PaySlip.pdf?Dates=<comma-separated dd/mm/yyyy>&UserId=<redacted>` and `PersonalFile/Pdf106.aspx/Pdf106-<year>.pdf?UserId=<redacted>&Year=<year>` |
+| Direct PDF endpoints (no `.asmx`, still need the session cookie) | **Verified** (real browser network capture, a later session): all live under `/Hilannetv2/`, not the domain root. Single month (from `GetPaySlipDataForMonth`'s `Url` field): `Hilannetv2/PersonalFile/PdfPaySlip.aspx/PaySlip<yyyy-mm>.pdf?Date=<dd/mm/yyyy>&UserId=<redacted>`. Multi-month combined PDF (from `GetMultiplePaySlipData`, one PDF covering the whole range — **not** one file per month): `Hilannetv2/PersonalFile/PdfPaySlip.aspx/PaySlip.pdf?Dates=<comma-separated dd/mm/yyyy>&UserId=<redacted>`. Form 106 (from `EmployeeChanged`'s `PdfViewLink`): `Hilannetv2/PersonalFile/Pdf106.aspx/Pdf106-<year>.pdf?UserId=<redacted>&Year=<year>`. |
 
 All of these require an authenticated session (cookies set by the ASP.NET
 login). **Unverified**: whether cookies alone are sufficient for a raw HTTP
@@ -165,15 +165,33 @@ all passing — verifies `credentials`/`sessions`/`tenants`/`sqlite_master`
 are unreachable). `npm run typecheck`, `npm run build`, and `npm test` all
 pass; the MCP server boots successfully over stdio.
 
-**Not yet done / next session should do this:** end-to-end testing against
-a real tenant. That requires the user to run `npm run ingest-creds --
---tenant amdocs` (or `technionadmin`) **themselves, in their own terminal**
-(never via the assistant's Shell tool — see the security incident in §2),
-then ask the assistant to call the `syncPayslips`/`syncForm106` MCP tools
-and sanity-check the results (against `finance/scripts/parse_payslips.py`'s
-known Amdocs numbers, per the acceptance criteria in `PLAN.md`). Also still
-open: confirm whether the user rotated their Hilan password after the
-plaintext-leak incident in §2, before they re-enter it here.
+## 6.6 End-to-end verification (done in a later session)
+
+Full end-to-end testing against the real Amdocs tenant is complete:
+**195 months of payslips** (Aug 2010 – Jul 2026) and **16 years of Form
+106** (2010–2025) were synced, all with structured Bruto/Neto data and a
+valid PDF. Along the way, several real (not hypothetical) bugs were found
+and fixed — see the "Reliability notes" section in `README.md` for the
+technical details (TLS proxy interception, the `/Hilannetv2` PDF URL
+prefix bug, `%2F`-encoding 404s, mid-stream PDF truncation, and a
+false-positive OTP detection heuristic). None of these were anticipated in
+the original plan below — they only surfaced by actually running against
+a live tenant, which is why "test end-to-end against a real tenant" was
+called out as the most important open item.
+
+Also added since v1: `HILAN_DB_KEY` env var + OS-native credential store
+(macOS Keychain verified; Windows DPAPI / Linux Secret Service implemented
+but unverified) so the server never needs a human to respond to a
+notification; `COMPANY_URL`/`COMPANY_TENANT`/`COMPANY_CODE` env-var
+fallback for single-tenant setups; a `resyncPayslipMonth` tool to retry/
+fetch one specific month without re-syncing the whole history; a
+`skipPdf` option for fast numbers-only syncs.
+
+**Still open / v1.1+ (unchanged from the original plan):** personal
+details, general file archive, and Form 101 are not implemented. OTP/2FA
+login is not supported (returns a clear error). The user's Hilan password
+was **not** rotated after the plaintext-leak incident in §2 — they
+explicitly chose to proceed without rotating it for now.
 
 ## 6. What to build next
 Follow `PLAN.md` (v2) exactly — it already incorporates a full 3-critic plan

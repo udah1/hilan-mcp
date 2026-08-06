@@ -96,7 +96,78 @@ export class TenantService {
     return resp;
   }
 
-  public async syncPayslips(subdomain: string, monthsBack = 3): Promise<PayslipSyncResult[]> {
+  /**
+   * Fetches + persists a single month's payslip data, and (unless
+   * `skipPdf`) re-downloads its PDF even if a row already exists.
+   * `skipPdf` is much faster — one JSON API call, no browser page/fetch —
+   * useful for "what was my salary in X" style questions that don't need
+   * the actual PDF file.
+   */
+  private async processPayslipMonth(
+    subdomain: string,
+    context: BrowserContext,
+    employeeId: number | null,
+    dateOption: PaySlipDateOption,
+    options: { skipPdf?: boolean } = {}
+  ): Promise<PayslipSyncResult> {
+    const resp = await HilanClient.callAsmx<PaySlipForMonthResponse>(
+      subdomain,
+      context,
+      'PaySlipApiapi.asmx/GetPaySlipDataForMonth',
+      { EmployeeId: employeeId, Months: [dateOption.Id], PaySlipType: 0 }
+    );
+
+    const data = resp.PaySlipData;
+    const bruto = data?.SalarySummary?.Bruto ?? null;
+    const neto = data?.SalarySummary?.Neto ?? null;
+    const parts = data?.SalarySummary?.SalaryParts
+      ? JSON.stringify(data.SalarySummary.SalaryParts.map(p => ({ name: p.Name ?? '', quantity: p.Quantity ?? 0 })))
+      : null;
+
+    let pdfPath: string | null = null;
+    let pdfError: string | undefined;
+    if (data?.Url && !options.skipPdf) {
+      const period = sanitizePeriodKey(dateOption.Id);
+      try {
+        pdfPath = await HilanClient.downloadPdf(
+          subdomain,
+          context,
+          data.Url,
+          this.tenantPdfDir(subdomain),
+          `payslip-${period}.pdf`
+        );
+      } catch (error) {
+        // A PDF download failure for one month (e.g. the file isn't
+        // published on the site yet) shouldn't discard the structured
+        // Bruto/Neto data we already have for this and other months.
+        pdfError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    const periodKey = sanitizePeriodKey(dateOption.Id) || dateOption.Name;
+    const existing = options.skipPdf ? await this.db.getPayslip(subdomain, periodKey) : null;
+    await this.db.upsertPayslip({
+      tenant_subdomain: subdomain,
+      period: periodKey,
+      period_label: dateOption.Name ?? null,
+      bruto,
+      neto,
+      salary_parts: parts,
+      // Don't clobber a previously-downloaded PDF just because this call
+      // intentionally skipped fetching one.
+      pdf_path: options.skipPdf ? (existing?.pdf_path ?? null) : pdfPath,
+    });
+
+    return {
+      periodLabel: dateOption.Name ?? null,
+      bruto,
+      neto,
+      pdfDownloaded: !!pdfPath,
+      ...(pdfError ? { pdfError } : {}),
+    };
+  }
+
+  public async syncPayslips(subdomain: string, monthsBack = 3, skipPdf = false): Promise<PayslipSyncResult[]> {
     const context = await this.ensureLoggedIn(subdomain);
     const initial = await this.bootstrap(subdomain, context);
     const tenant = await this.db.getTenant(subdomain);
@@ -110,65 +181,43 @@ export class TenantService {
           : [];
 
     const results: PayslipSyncResult[] = [];
-
     for (const dateOption of dateOptions) {
-      const resp = await HilanClient.callAsmx<PaySlipForMonthResponse>(
-        subdomain,
-        context,
-        'PaySlipApiapi.asmx/GetPaySlipDataForMonth',
-        { EmployeeId: employeeId, Months: [dateOption.Id], PaySlipType: 0 }
-      );
+      results.push(await this.processPayslipMonth(subdomain, context, employeeId, dateOption, { skipPdf }));
+    }
+    return results;
+  }
 
-      const data = resp.PaySlipData;
-      const bruto = data?.SalarySummary?.Bruto ?? null;
-      const neto = data?.SalarySummary?.Neto ?? null;
-      const parts = data?.SalarySummary?.SalaryParts
-        ? JSON.stringify(
-            data.SalarySummary.SalaryParts.map(p => ({ name: p.Name ?? '', quantity: p.Quantity ?? 0 }))
-          )
-        : null;
+  /**
+   * Raw escape hatch for exploring/debugging Hilan's `.asmx` API surface
+   * against a real logged-in session — e.g. testing whether
+   * `GetMultiplePaySlipData` accepts more months than the UI's 12-month
+   * picker allows. Not meant for regular use.
+   */
+  public async debugCallAsmx(subdomain: string, servicePath: string, body: Record<string, unknown>): Promise<unknown> {
+    const context = await this.ensureLoggedIn(subdomain);
+    return HilanClient.callAsmx(subdomain, context, servicePath, body);
+  }
 
-      let pdfPath: string | null = null;
-      let pdfError: string | undefined;
-      if (data?.Url) {
-        const period = sanitizePeriodKey(dateOption.Id);
-        try {
-          pdfPath = await HilanClient.downloadPdf(
-            subdomain,
-            context,
-            data.Url,
-            this.tenantPdfDir(subdomain),
-            `payslip-${period}.pdf`
-          );
-        } catch (error) {
-          // A PDF download failure for one month (e.g. the file isn't
-          // published on the site yet) shouldn't discard the structured
-          // Bruto/Neto data we already have for this and other months.
-          pdfError = error instanceof Error ? error.message : String(error);
-        }
-      }
-
-      const periodKey = sanitizePeriodKey(dateOption.Id) || dateOption.Name;
-      await this.db.upsertPayslip({
-        tenant_subdomain: subdomain,
-        period: periodKey,
-        period_label: dateOption.Name ?? null,
-        bruto,
-        neto,
-        salary_parts: parts,
-        pdf_path: pdfPath,
-      });
-
-      results.push({
-        periodLabel: dateOption.Name ?? null,
-        bruto,
-        neto,
-        pdfDownloaded: !!pdfPath,
-        ...(pdfError ? { pdfError } : {}),
-      });
+  /**
+   * Re-fetches + re-downloads a single, specific month — e.g. to retry a
+   * PDF that came back truncated — without re-syncing the entire history.
+   * `period` accepts either the stored key format ("MM_YYYY") or the raw
+   * Hilan month format ("MM/YYYY").
+   */
+  public async resyncPayslipMonth(subdomain: string, period: string, skipPdf = false): Promise<PayslipSyncResult> {
+    const context = await this.ensureLoggedIn(subdomain);
+    const tenant = await this.db.getTenant(subdomain);
+    let employeeId = tenant?.employee_id ?? null;
+    if (employeeId === null) {
+      const initial = await this.bootstrap(subdomain, context);
+      employeeId = initial.SelectedEmployee?.EmployeeId ?? null;
     }
 
-    return results;
+    const monthId = period.includes('/') ? period : period.replace('_', '/');
+    const existing = await this.db.getPayslip(subdomain, sanitizePeriodKey(monthId));
+    const dateOption: PaySlipDateOption = { Id: monthId, Name: existing?.period_label ?? monthId };
+
+    return this.processPayslipMonth(subdomain, context, employeeId, dateOption, { skipPdf });
   }
 
   public async syncForm106(subdomain: string, year?: string): Promise<Form106SyncResult> {

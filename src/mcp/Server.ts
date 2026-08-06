@@ -116,10 +116,10 @@ class Server {
     this.registerTool(
       'syncPayslips',
       async params => {
-        const { tenant, monthsBack } = params as { tenant?: string; monthsBack?: number };
+        const { tenant, monthsBack, skipPdf } = params as { tenant?: string; monthsBack?: number; skipPdf?: boolean };
         return this.withDb(async () => {
           const resolvedTenant = await this.resolveTenant(tenant);
-          const results = await this.tenantService.syncPayslips(resolvedTenant, monthsBack ?? 3);
+          const results = await this.tenantService.syncPayslips(resolvedTenant, monthsBack ?? 3, skipPdf ?? false);
           return { success: true, data: { tenant: resolvedTenant, payslips: results } };
         });
       },
@@ -133,7 +133,75 @@ class Server {
             .describe(
               'Tenant subdomain, e.g. "amdocs". Optional if this server has COMPANY_URL / COMPANY_TENANT / COMPANY_CODE set in its env'
             ),
-          monthsBack: z.number().int().min(1).max(24).optional().describe('How many recent months to sync (default 3)'),
+          monthsBack: z
+            .number()
+            .int()
+            .min(1)
+            .max(600)
+            .optional()
+            .describe(
+              'How many recent months to sync (default 3). The tenant itself caps how far back its payslip archive actually goes — this is just a sanity ceiling, not a real limit.'
+            ),
+          skipPdf: z
+            .boolean()
+            .optional()
+            .describe(
+              'If true, only fetch/store the structured Bruto/Neto/parts data and skip downloading PDFs — much faster for quick numeric questions. Any previously-downloaded PDF for a month is left untouched. Default false.'
+            ),
+        },
+      }
+    );
+
+    this.registerTool(
+      'debugCallAsmx',
+      async params => {
+        const { tenant, servicePath, body } = params as { tenant?: string; servicePath: string; body?: Record<string, unknown> };
+        if (!servicePath) throw new Error('servicePath is required');
+        return this.withDb(async () => {
+          const resolvedTenant = await this.resolveTenant(tenant);
+          const result = await this.tenantService.debugCallAsmx(resolvedTenant, servicePath, body ?? {});
+          return { success: true, data: result };
+        });
+      },
+      {
+        description:
+          'DEBUG/exploration only: raw pass-through to any PaySlipApiapi/Form106Apiapi .asmx endpoint on a logged-in session, for testing API behavior. Not for regular use.',
+        inputSchema: {
+          tenant: z.string().optional(),
+          servicePath: z.string().describe('e.g. "PaySlipApiapi.asmx/GetMultiplePaySlipData"'),
+          body: z.record(z.unknown()).optional().describe('JSON body to POST'),
+        },
+      }
+    );
+
+    this.registerTool(
+      'resyncPayslipMonth',
+      async params => {
+        const { tenant, period, skipPdf } = params as { tenant?: string; period: string; skipPdf?: boolean };
+        if (!period) throw new Error('period is required');
+        return this.withDb(async () => {
+          const resolvedTenant = await this.resolveTenant(tenant);
+          const result = await this.tenantService.resyncPayslipMonth(resolvedTenant, period, skipPdf ?? false);
+          return { success: true, data: { tenant: resolvedTenant, period, payslip: result } };
+        });
+      },
+      {
+        description:
+          'Re-fetch a single specific month (structured data, and by default the PDF too), overwriting whatever is already stored for it. Use this to retry one bad/truncated PDF, or to quickly check one month\'s numbers, instead of re-running syncPayslips over the whole history.',
+        inputSchema: {
+          tenant: z
+            .string()
+            .optional()
+            .describe(
+              'Tenant subdomain, e.g. "amdocs". Optional if this server has COMPANY_URL / COMPANY_TENANT / COMPANY_CODE set in its env'
+            ),
+          period: z
+            .string()
+            .describe('The month to resync, as "MM_YYYY" (matches the stored period key) or "MM/YYYY", e.g. "10_2019" or "10/2019"'),
+          skipPdf: z
+            .boolean()
+            .optional()
+            .describe('If true, only fetch the structured Bruto/Neto/parts data and skip the PDF — fast, no browser download. Default false.'),
         },
       }
     );

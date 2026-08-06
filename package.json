@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "cli": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts",
     "ingest-creds": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts ingest-creds",
+    "setup-key": "node --no-warnings=ExperimentalWarning --import tsx ./src/cli/index.ts setup-key",
     "test": "vitest run",
     "test:watch": "vitest"
   },

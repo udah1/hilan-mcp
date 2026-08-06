@@ -348,40 +348,57 @@ export class HilanClient {
       ? url
       : `${baseUrl}/Hilannetv2/${url.replace(/^\/+/, '')}`;
 
-    const page = await context.newPage();
-    let result: { ok: boolean; status: number; base64?: string };
-    try {
-      // A fresh page starts at about:blank (a null origin), so a same-origin
-      // fetch() to the tenant's domain would be blocked by CORS. Navigate
-      // there first so the fetch below runs from the correct origin.
-      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-      result = await page.evaluate(async (u: string) => {
-        const res = await fetch(u, { credentials: 'include' });
-        if (!res.ok) {
-          return { ok: false, status: res.status };
-        }
-        const buf = await res.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let binary = '';
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-        }
-        return { ok: true, status: res.status, base64: btoa(binary) };
-      }, absoluteUrl);
-    } finally {
-      await page.close();
+    // The Amdocs network's corporate TLS-intercepting proxy occasionally
+    // truncates a response mid-stream (observed: exact 32768-byte cutoffs,
+    // a suspiciously round proxy-buffer size) — the fetch still resolves
+    // "successfully" with a partial body instead of throwing. Detect this
+    // by checking for the standard PDF end-of-file marker and retry a
+    // couple of times before giving up.
+    let lastError: string | undefined;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const page = await context.newPage();
+      let result: { ok: boolean; status: number; base64?: string };
+      try {
+        // A fresh page starts at about:blank (a null origin), so a same-origin
+        // fetch() to the tenant's domain would be blocked by CORS. Navigate
+        // there first so the fetch below runs from the correct origin.
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+        result = await page.evaluate(async (u: string) => {
+          const res = await fetch(u, { credentials: 'include' });
+          if (!res.ok) {
+            return { ok: false, status: res.status };
+          }
+          const buf = await res.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let binary = '';
+          const chunkSize = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunkSize) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+          }
+          return { ok: true, status: res.status, base64: btoa(binary) };
+        }, absoluteUrl);
+      } finally {
+        await page.close();
+      }
+
+      if (!result.ok || !result.base64) {
+        throw new HilanLoginError(`Failed to download PDF from ${absoluteUrl}: HTTP ${result.status}`);
+      }
+
+      const buffer = Buffer.from(result.base64, 'base64');
+      const looksTruncated = !buffer.subarray(-2048).includes('%%EOF');
+      if (looksTruncated) {
+        lastError = `response looked truncated (${buffer.length} bytes, no %%EOF trailer found) on attempt ${attempt}`;
+        continue;
+      }
+
+      const destPath = join(destDir, fileName);
+      writeFileSync(destPath, buffer);
+      chmodSync(destPath, 0o600);
+      return destPath;
     }
 
-    if (!result.ok || !result.base64) {
-      throw new HilanLoginError(`Failed to download PDF from ${absoluteUrl}: HTTP ${result.status}`);
-    }
-
-    const buffer = Buffer.from(result.base64, 'base64');
-    const destPath = join(destDir, fileName);
-    writeFileSync(destPath, buffer);
-    chmodSync(destPath, 0o600);
-    return destPath;
+    throw new HilanLoginError(`Failed to download a complete PDF from ${absoluteUrl}: ${lastError}`);
   }
 
   public static async shutdown(): Promise<void> {

@@ -331,6 +331,15 @@ export class SQLiteDatabaseService {
     );
   }
 
+  public async getPayslip(subdomain: string, period: string): Promise<PayslipRow | null> {
+    this.ensureReady();
+    const db = this.assertInitialized();
+    const row = db
+      .prepare('SELECT * FROM payslips WHERE tenant_subdomain = ? AND period = ?')
+      .get(subdomain, period);
+    return (row as PayslipRow | undefined) ?? null;
+  }
+
   public async upsertForm106(row: Omit<Form106Row, 'fetched_at'>): Promise<void> {
     this.ensureReady();
     const db = this.assertInitialized();

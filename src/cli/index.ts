@@ -4,6 +4,7 @@ import '../utils/consoleRedirect.js';
 
 import { program } from 'commander';
 import { ingestCredentials } from './ingestCredentials.js';
+import { setupKey } from './setupKey.js';
 import { HilanClient } from '../services/HilanClient.js';
 import { getDefaultTenantInput } from '../utils/env.js';
 import { configureLogger } from '../utils/logger.js';
@@ -41,6 +42,21 @@ program
     } catch (error) {
       console.error('Error:', error instanceof Error ? error.message : 'Unknown error occurred');
       await HilanClient.shutdown();
+      process.exit(1);
+    }
+  });
+
+program
+  .command('setup-key')
+  .description(
+    "Store the database encryption key in this OS's native credential store (macOS Keychain / Windows DPAPI / Linux Secret Service) so the MCP server never has to ask for it interactively"
+  )
+  .action(async () => {
+    try {
+      await setupKey();
+      process.exit(0);
+    } catch (error) {
+      console.error('Error:', error instanceof Error ? error.message : 'Unknown error occurred');
       process.exit(1);
     }
   });

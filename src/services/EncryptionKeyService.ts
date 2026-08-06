@@ -1,5 +1,6 @@
 import { sendNotification } from '../utils/notify.js';
 import type { NotificationOptions, NotificationCallback } from '../utils/notify.js';
+import { getSecretFromOsStore } from '../utils/secretStore.js';
 
 export class EncryptionKeyService {
   private static instance: EncryptionKeyService;
@@ -30,6 +31,12 @@ export class EncryptionKeyService {
   public async ensureKeyIsAvailable(): Promise<string> {
     if (this.currentKey) {
       return this.currentKey;
+    }
+
+    const osKey = getSecretFromOsStore();
+    if (osKey) {
+      this.setKey(osKey);
+      return this.currentKey as string;
     }
 
     const envKey = process.env.HILAN_DB_KEY?.trim();
