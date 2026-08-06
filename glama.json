@@ -1,0 +1,20 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": ["udah1"],
+  "name": "hilan-mcp",
+  "description": "MCP server for Hilan (Hilanet / חילן, חילנט, net.hilan.co.il) employee self-service — pull payslips and Form 106 into any AI assistant, for any tenant.",
+  "type": "mcp_server",
+  "status": "active",
+  "transport": ["stdio"],
+  "keywords": [
+    "hilan",
+    "hilanet",
+    "חילן",
+    "חילנט",
+    "payslip",
+    "payroll",
+    "form106",
+    "israel",
+    "hr"
+  ]
+}
