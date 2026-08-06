@@ -183,9 +183,12 @@ work and still save a PDF, just without the parsed Bruto/Neto numbers.
   one file covering a date range instead of one per month) hit a hard
   **HTTP 404 once the URL exceeds ~2048 characters** — that's IIS's
   default `requestFiltering maxQueryString` limit, not a Hilan-specific
-  cap. In practice that's roughly 24 months (2 years) per combined PDF;
-  requesting the full ~16-year history in one combined file fails. Not an
-  issue for per-month syncing (`syncPayslips`), which never hits this.
+  cap (each month adds ~11 chars to the URL). Verified working at 120
+  months (10 years, ~1.4KB URL); verified failing at 194 months (~16
+  years, 2.2KB URL) — so a ~15-year request is the realistic practical
+  ceiling per combined PDF, not the "2-3 years" this section originally
+  (incorrectly) guessed. Not an issue for per-month syncing
+  (`syncPayslips`), which never builds one huge URL.
 - A tenant's *regular* login page can unconditionally show a "log in with
   a one-time code" button/link even when normal username+password login
   is fully supported and working — don't treat that text alone as proof
