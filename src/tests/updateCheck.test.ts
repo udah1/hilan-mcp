@@ -86,4 +86,33 @@ describe('checkForUpdateNotice', () => {
     );
     await expect(checkForUpdateNotice()).resolves.toBeNull();
   });
+
+  it('does not hit the network again on a second call within the 24h cache window', async () => {
+    const { checkForUpdateNotice, getCurrentVersion } = await freshModule();
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ version: getCurrentVersion() }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await checkForUpdateNotice();
+    await checkForUpdateNotice();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still notifies about an even newer version after an older one was dismissed', async () => {
+    const { checkForUpdateNotice, dismissUpdateVersion, getCurrentVersion } = await freshModule();
+    const current = getCurrentVersion();
+    const [major, minor, patch] = current.split('.').map(Number);
+    const dismissed = `${major}.${minor}.${patch + 1}`;
+    const evenNewer = `${major}.${minor}.${patch + 2}`;
+
+    dismissUpdateVersion(dismissed);
+    mockRegistryVersion(evenNewer);
+
+    const notice = await checkForUpdateNotice();
+    expect(notice?.latestVersion).toBe(evenNewer);
+  });
+
+  it('exposes a well-formed semver-like current version', async () => {
+    const { getCurrentVersion } = await freshModule();
+    expect(getCurrentVersion()).toMatch(/^\d+\.\d+\.\d+/);
+  });
 });
