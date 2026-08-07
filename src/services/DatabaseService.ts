@@ -14,6 +14,32 @@ import type {
 } from '../types.js';
 
 /**
+ * Opens the SQLite file, translating the one failure mode that isn't the
+ * caller's fault into something they can act on: npm 12 blocks dependency
+ * install scripts unless they're allowlisted, so `npx hilan-mcp` /
+ * `npm i -g hilan-mcp` silently skip the native build for
+ * better-sqlite3-multiple-ciphers and this is the first place it surfaces —
+ * as an opaque "Could not locate the bindings file".
+ */
+function openDatabase(dbPath: string): Database {
+  try {
+    return new Database(dbPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('Could not locate the bindings file')) {
+      throw new Error(
+        'The native SQLite module (better-sqlite3-multiple-ciphers) was installed without its compiled binding. ' +
+          'npm 12 blocks dependency install scripts by default, which skips that build. Reinstall allowing it:\n' +
+          '  npm install -g --allow-scripts=better-sqlite3-multiple-ciphers hilan-mcp\n' +
+          'or, to allow it for every future npx/global install:\n' +
+          '  npm config set allow-scripts=better-sqlite3-multiple-ciphers --location=user'
+      );
+    }
+    throw error;
+  }
+}
+
+/**
  * Parses a stored "MM_YYYY" period key (see TenantService.sanitizePeriodKey)
  * into a `YYYYMM` integer for correct chronological sorting/grouping —
  * plain text sorting of `period` groups by month across years (e.g.
@@ -209,7 +235,7 @@ export class SQLiteDatabaseService {
     }
 
     const isNewDatabase = !(await this.databaseExists());
-    const db = new Database(this.dbPath);
+    const db = openDatabase(this.dbPath);
 
     if (isNewDatabase) {
       try {

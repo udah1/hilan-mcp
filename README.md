@@ -24,6 +24,7 @@ secrets stored anywhere.
 - [Features](#features)
 - [How it works](#how-it-works)
 - [Setup](#setup)
+  - [0. If you're on npm 12 or newer](#0-if-youre-on-npm-12-or-newer)
   - [1. Register a tenant and enter credentials](#1-register-a-tenant-and-enter-credentials)
   - [2. Add the server to your MCP client config](#2-add-the-server-to-your-mcp-client-config)
   - [3. Use it](#3-use-it)
@@ -58,6 +59,28 @@ the login form is inspected fresh for each tenant the first time you ingest
 credentials, rather than hardcoded to one company.
 
 ## Setup
+
+### 0. If you're on npm 12 or newer
+
+npm 12 blocks dependency install scripts unless you allow them, and one of
+this package's dependencies (`better-sqlite3-multiple-ciphers`, the
+encrypted SQLite engine) needs its install script to compile a native
+binding. Without it, setup appears to succeed and then every tool that
+touches the database fails. Allow it once, for all future `npx` and global
+installs:
+
+```bash
+npm config set allow-scripts=better-sqlite3-multiple-ciphers --location=user
+```
+
+Or per install, if you'd rather not set it globally:
+
+```bash
+npm install -g --allow-scripts=better-sqlite3-multiple-ciphers hilan-mcp
+```
+
+On npm 11 and older this isn't needed — install scripts still run by
+default. Check with `npm --version`.
 
 ### 1. Register a tenant and enter credentials
 
@@ -185,6 +208,9 @@ If a user asks you to set up `hilan-mcp` for them:
    user types. Tell the user to open their **own** terminal and run
    `npx hilan-mcp setup --tenant <their-org-code-or-subdomain>` themselves,
    then (recommended) `npx hilan-mcp setup-key`.
+   Check their `npm --version` first: on npm 12+ they also need
+   [step 0](#0-if-youre-on-npm-12-or-newer) or the database will fail to
+   open later, in a way that doesn't look related to installation.
 2. Once that's done, **you** can safely add the MCP server entry to the
    client's config file (the JSON blocks above) — that part has no secrets
    in it as long as the user used `setup-key` (OS credential store) rather

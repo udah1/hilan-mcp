@@ -26,6 +26,11 @@
     "test:watch": "vitest",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
+  "allowScripts": {
+    "better-sqlite3-multiple-ciphers": true,
+    "esbuild": true,
+    "fsevents": false
+  },
   "keywords": [
     "mcp",
     "hilan",
