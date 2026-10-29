@@ -182,15 +182,31 @@ export class HilanClient {
     try {
       await page.goto('https://net.hilan.co.il/login', { waitUntil: 'networkidle' });
       await page.fill('#orgId', orgCode);
+      // "המשך" does not navigate on click. It POSTs LoginApi/SelectOrg, and the
+      // page changes location only after that response. The generic page is
+      // already network-idle, so waitForLoadState() returns immediately and
+      // used to read the URL before the request was even sent.
+      const selectOrg = page.waitForResponse(
+        res => res.url().includes('/LoginApi/SelectOrg') && res.request().method() === 'POST',
+        { timeout: 8000 }
+      );
+      // If click throws, this waiter must not surface as an unhandled rejection.
+      void selectOrg.catch(() => {});
       await page.click('button[type="submit"]');
-      // Waits for whatever happens next (redirect to the tenant's own
-      // subdomain on success, or the page re-settling with a validation
-      // error on an invalid code) to actually finish, instead of a fixed
-      // delay that's slower than necessary on a fast connection and can
-      // still race a slow one. Bounded so a network hiccup can't hang this
-      // indefinitely — the outcome checks below already handle "still on
-      // the generic login page" as a valid (failure) result.
-      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+      try {
+        const response = await selectOrg;
+        const body = (await response.json().catch(() => null)) as { IsFail?: boolean } | null;
+        if (body?.IsFail) {
+          throw new HilanLoginError(`Org code "${orgCode}" did not resolve to a tenant subdomain.`);
+        }
+        await page.waitForURL(url => url.hostname !== 'net.hilan.co.il', { timeout: 8000 });
+      } catch (error) {
+        if (error instanceof HilanLoginError) throw error;
+        if (error instanceof Error && error.name === 'TimeoutError') {
+          throw new HilanLoginError(`Org code "${orgCode}" did not resolve to a tenant subdomain.`);
+        }
+        throw error;
+      }
       const finalUrl = page.url();
       if (finalUrl.includes('net.hilan.co.il/login') && !finalUrl.startsWith('https://net.hilan.co.il')) {
         return subdomainFromBaseUrl(finalUrl);
